@@ -32,7 +32,7 @@ fi
 V="$FAKE/Vault/bin/vault"
 
 # ── 2. 版本与空库 ────────────────────────────────────────
-check "version"        "vault 0.2.0" "$("$V" version 2>&1)"
+check "version"        "vault 0.3.0" "$("$V" version 2>&1)"
 [ -z "$("$V" ls)" ] && ok "空库 ls 为空" || bad "空库 ls 为空" "$("$V" ls)"
 
 # ── 3. 建条目 + stdin 写值 + shape 回环 ──────────────────
@@ -101,6 +101,13 @@ print(f'{len(es)} {int(otp)}')")
   [ "${1:-0}" -ge 2 ] && ok "kdbx 条目数 (${1})" || bad "kdbx 条目数" "${1:-0}"
   [ "${2:-0}" = "1" ] && ok "kdbx 含 TOTP otpauth" || bad "kdbx TOTP" ""
 fi
+
+# ── 8c. rename（值随行搬移，目标冲突拒绝）───────────────
+(cd / && "$V" rename "服务/Stripe" "服务/Stripe2") >/dev/null 2>&1   # 故意在库外运行：回归 cwd 敏感
+[ "$("$V" get "服务/Stripe2" appkey 2>/dev/null)" = "$SECRET" ] && ok "rename 值完整搬移" || bad "rename 值搬移" ""
+"$V" peek | grep -Fxq "服务/Stripe" && bad "rename 旧名残留" || ok "rename 旧名已除"
+REN_OUT=$("$V" rename "服务/Stripe2" "工作/GitLab" 2>&1) && bad "rename 应拒绝冲突" || check "rename 冲突拒绝" "已存在" "$REN_OUT"
+"$V" rename "服务/Stripe2" "服务/Stripe" >/dev/null 2>&1 && ok "rename 改回" || bad "rename 改回" ""
 
 # ── 9. html / clean ──────────────────────────────────────
 HTML_OUT="$("$V" html "$FAKE/view.html" 2>&1)"

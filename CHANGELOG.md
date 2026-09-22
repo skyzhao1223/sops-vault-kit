@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 — 2026-09-22
+
+### Added
+
+- `vault rename <old> <new>` — move an entry (all fields, encrypted values
+  included) to a new name via a verified whole-file round trip; refuses when
+  the target exists. Wired into smoke with a run-from-outside-the-vault
+  regression (34 assertions total).
+
+### Fixed
+
+- **cwd-dependent `.sops.yaml` discovery**: the round-trip pipeline
+  (`_roundtrip_merge`, used by the `new`/`set` fallback and `rename`) and
+  `vault reencrypt` ran `sops encrypt --filename-override` from the caller's
+  working directory; outside the vault directory sops could not find the
+  creation rules ("config file not found"). Both now run inside a subshell
+  cd'd to the vault. Surfaced by the rename smoke test — previous fallback
+  tests had always run from inside a vault directory.
+
 ## 0.2.0 — 2026-09-22
 
 ### Added

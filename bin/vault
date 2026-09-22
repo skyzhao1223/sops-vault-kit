@@ -9,7 +9,7 @@
 #   3. 所有写操作都改同一个 YAML 文件，改动可 git diff / git 回滚。
 set -euo pipefail
 
-VAULT_VERSION="0.2.0"
+VAULT_VERSION="0.3.0"
 VAULT_DIR="${VAULT_DIR:-$HOME/Vault}"
 SECRETS="${SECRETS_FILE:-$VAULT_DIR/secrets.yaml}"
 KEY_MAC="$HOME/Library/Application Support/sops/age/keys.txt"
@@ -179,9 +179,10 @@ cmd_clean() {
 _roundtrip_merge() {
   local filter="$1"; shift
   local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/vault-rt.XXXXXX")"; chmod 600 "$tmp"
-  if sops decrypt --input-type yaml --output-type json "$SECRETS" 2>/dev/null \
-     | jq "$@" "$filter" \
-     | sops encrypt --input-type json --output-type yaml --filename-override "$SECRETS" /dev/stdin > "$tmp" \
+  if ( cd "$VAULT_DIR" \
+       && sops decrypt --input-type yaml --output-type json "$SECRETS" 2>/dev/null \
+       | jq "$@" "$filter" \
+       | sops encrypt --input-type json --output-type yaml --filename-override "$SECRETS" /dev/stdin ) > "$tmp" \
      && sops decrypt --input-type yaml --output-type json "$tmp" >/dev/null 2>&1; then
     mv "$tmp" "$SECRETS"
     return 0
@@ -292,6 +293,20 @@ cmd_rm() {
   fi
   if [ -n "$field" ]; then printf '已删除 %s.%s\n' "$name" "$field"
   else printf '已删除 %s\n' "$name"; fi
+}
+
+# 重命名条目（sops 无原生 rename：整文件往返搬移子树，校验后原子替换）
+cmd_rename() {
+  local old="${1:?用法: vault rename <旧系统名> <新系统名>}"
+  local new="${2:?缺少新系统名}"
+  [ "$old" != "$new" ] || die "新旧名称相同"
+  cmd_peek | grep -Fxq "$old" || die "条目不存在: $old"
+  if cmd_peek | grep -Fxq "$new"; then die "目标已存在，拒绝覆盖: $new"; fi
+  check_key
+  _roundtrip_merge '.systems = (.systems // {}) | .systems[$new] = .systems[$old] | del(.systems[$old])' \
+    --arg old "$old" --arg new "$new" || die "重命名失败: $old"
+  cmd_md >/dev/null 2>&1 || true
+  printf '已重命名 %s → %s\n' "$old" "$new"
 }
 
 cmd_copy() {
@@ -412,8 +427,9 @@ cmd_reencrypt() {
   local tmp before after
   before="$(sj | jq -r '.systems // {} | length')"
   tmp="$(mktemp "${TMPDIR:-/tmp}/vault-reencrypt.XXXXXX")"
-  if ! sops decrypt --input-type yaml --output-type yaml "$SECRETS" \
-       | sops encrypt --input-type yaml --output-type yaml --filename-override "$SECRETS" /dev/stdin > "$tmp"; then
+  if ! ( cd "$VAULT_DIR" \
+         && sops decrypt --input-type yaml --output-type yaml "$SECRETS" \
+         | sops encrypt --input-type yaml --output-type yaml --filename-override "$SECRETS" /dev/stdin ) > "$tmp"; then
     rm -f "$tmp"; die "重新加密失败，原文件未改动"
   fi
   after="$(sops decrypt --input-type yaml --output-type json "$tmp" 2>/dev/null | jq -r '.systems // {} | length')"
@@ -702,6 +718,7 @@ vault —— 本地加密凭据库（免费 / 本地 / AI 可管理）
   vault set  <系统> <字段> <值|->  设置字段；值为 - 时从 stdin 读（pbpaste | vault set X appkey -，
                                 密码不进命令行参数/shell 历史/进程列表）
   vault rm   <系统> [字段]      删除整条或单个字段
+  vault rename <旧名> <新名>    重命名条目（整文件往返，目标已存在则拒绝）
   vault edit                   整库编辑：VS Code（或 $EDITOR）里改明文 YAML，关掉标签页自动重加密
   vault md                     用非敏感字段重建 systems.md 的自动区块
 
@@ -751,6 +768,7 @@ main() {
     new|add)   cmd_new "$@" ;;
     set)       cmd_set "$@" ;;
     rm|del)    cmd_rm "$@" ;;
+    rename|mv) cmd_rename "$@" ;;
     edit)      check_key; cmd_edit ;;
     md)        cmd_md ;;
     save|commit) cmd_save "${1:-}" ;;
