@@ -13,6 +13,15 @@
   by fullwidth characters are now braced.
 - Smoke suite now surfaces failing command output and an env banner (platform,
   bash and sops versions) instead of swallowing them.
+- **The actual Ubuntu failure**: `install.sh` honors `XDG_CONFIG_HOME` when placing
+  the age key, but `vault` hard-coded `$HOME/.config` — on any machine where
+  `XDG_CONFIG_HOME` is set (GitHub runners do), every key-requiring command died with
+  a misleading macOS-path error. `vault` now resolves `${XDG_CONFIG_HOME:-$HOME/.config}`
+  exactly like sops and the installer. Smoke suite now sets a deviated
+  `XDG_CONFIG_HOME` to regression-cover this.
+- `install.sh` no longer swallows a failing post-install `doctor` (it previously
+  printed a warning and exited 0, masking the key-resolution bug above).
+- `check_key` error message lists every location actually searched.
 
 ## 0.1.0 — 2026-09-22
 

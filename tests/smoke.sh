@@ -8,6 +8,8 @@ set -uo pipefail
 KIT="$(cd "$(dirname "$0")/.." && pwd)"
 FAKE="$(mktemp -d "${TMPDIR:-/tmp}/vault-smoke.XXXXXX")"
 export HOME="$FAKE"
+# 故意让 XDG_CONFIG_HOME 偏离 $HOME/.config，回归覆盖 runner 上的真实事故
+export XDG_CONFIG_HOME="$FAKE/xdg-config"
 PASS=0; FAIL=0
 printf 'env: %s | bash %s | sops %s\n' "$(uname -srm)" "$BASH_VERSION" "$(sops --version 2>/dev/null | head -1 | awk '{print $2}')"
 

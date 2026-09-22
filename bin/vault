@@ -13,7 +13,7 @@ VAULT_VERSION="0.1.1"
 VAULT_DIR="${VAULT_DIR:-$HOME/Vault}"
 SECRETS="${SECRETS_FILE:-$VAULT_DIR/secrets.yaml}"
 KEY_MAC="$HOME/Library/Application Support/sops/age/keys.txt"
-KEY_XDG="$HOME/.config/sops/age/keys.txt"
+KEY_XDG="${XDG_CONFIG_HOME:-$HOME/.config}/sops/age/keys.txt"
 
 # ---- 密钥定位：优先用户显式指定，其次 macOS 默认路径，再次 XDG 路径 ----
 if [ -z "${SOPS_AGE_KEY_FILE:-}" ]; then
@@ -32,7 +32,7 @@ check() {
 
 check_key() {
   [ -n "${SOPS_AGE_KEY_FILE:-}" ] && [ -f "${SOPS_AGE_KEY_FILE:-}" ] \
-    || die "找不到 age 密钥。期望位置：$KEY_MAC"
+    || die "找不到 age 密钥。已查找: SOPS_AGE_KEY_FILE 环境变量、$KEY_MAC、$KEY_XDG"
 }
 
 # sops 路径语法：每级各自一个方括号，例如 ["systems"]["工作/VPN"]["password"]

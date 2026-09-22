@@ -90,7 +90,7 @@ esac
 
 # ---- 8. 自检 ----
 say ""
-"$VAULT_DIR/bin/vault" doctor || say "（doctor 有告警，见上）"
+"$VAULT_DIR/bin/vault" doctor || die "安装后自检失败（见上方 doctor 输出）"
 
 cat <<EOF
 
