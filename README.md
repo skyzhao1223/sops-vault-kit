@@ -86,6 +86,12 @@ Honest limits: local processes running as your user can read the vault (the pre-
 model of any local store — FileVault is your friend); `vault html` writes a 600-perm plaintext page
 to `/tmp` until `vault clean`.
 
+## Docs
+
+- [Threat model](docs/threat-model.md) ([中文](docs/threat-model.zh.md)) — what is defended, what is not, and why
+- [Migration guide](docs/migration.md) — import from Bitwarden / 1Password / Chrome
+- [Contributing](CONTRIBUTING.md) — repo rules (bash 3.2, fail-closed, BSD+GNU), release process
+
 ## Requirements & platforms
 
 - `sops`, `age`, `git`, `jq`, `python3` (macOS: `brew install sops age`)

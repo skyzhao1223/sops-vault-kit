@@ -82,6 +82,12 @@ vault get "服务/stripe" appkey | tr -d '\n' | vault shape
 如实说明的边界：以你的用户身份运行的本地进程能读库（所有本地密码存储的共同威胁模型，
 FileVault 是你的朋友）；`vault html` 会在 `/tmp` 写一个 600 权限的明文页面，直到 `vault clean`。
 
+## 文档
+
+- [威胁模型](docs/threat-model.zh.md)（[English](docs/threat-model.md)）——防住什么、防不住什么、为什么这样取舍
+- [迁移指南](docs/migration.md)——从 Bitwarden / 1Password / Chrome 导入
+- [贡献指南](CONTRIBUTING.md)——仓库规则（bash 3.2、fail-closed、BSD+GNU 双方言）与发版流程
+
 ## 依赖与平台
 
 - `sops`、`age`、`git`、`jq`、`python3`（macOS：`brew install sops age`）
