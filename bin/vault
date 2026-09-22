@@ -578,7 +578,11 @@ cmd_doctor() {
   printf '%-14s %s\n' "python3" "$(command -v python3 || echo '缺失（仅 totp 命令受影响）')"
   if [ -f "${SOPS_AGE_KEY_FILE:-/nonexistent}" ]; then
     printf '%-14s %s\n' "age 密钥" "$SOPS_AGE_KEY_FILE"
-    local perm; perm="$(stat -f '%Lp' "$SOPS_AGE_KEY_FILE" 2>/dev/null || stat -c '%a' "$SOPS_AGE_KEY_FILE" 2>/dev/null || echo '?')"
+    local perm
+    case "$(uname -s)" in
+      Darwin) perm="$(stat -f '%Lp' "$SOPS_AGE_KEY_FILE" 2>/dev/null || echo '?')" ;;
+      *)      perm="$(stat -c '%a' "$SOPS_AGE_KEY_FILE" 2>/dev/null || echo '?')" ;;
+    esac
     if [ "$perm" = "600" ]; then printf '%-14s %s\n' "密钥权限" "600 ✓"
     else printf '%-14s %s\n' "密钥权限" "$perm ⚠️ 建议 chmod 600"; fi
   else

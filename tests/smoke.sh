@@ -91,7 +91,10 @@ check "import 幂等（跳过已存在）" "跳过 2 条" "$IMP2"
 # ── 9. html / clean ──────────────────────────────────────
 HTML_OUT="$("$V" html "$FAKE/view.html" 2>&1)"
 [ -f "$FAKE/view.html" ] && ok "html 生成视图" || bad "html" "$HTML_OUT"
-PERM=$(stat -f '%Lp' "$FAKE/view.html" 2>/dev/null || stat -c '%a' "$FAKE/view.html" 2>/dev/null)
+case "$(uname -s)" in
+  Darwin) PERM=$(stat -f '%Lp' "$FAKE/view.html") ;;
+  *)      PERM=$(stat -c '%a' "$FAKE/view.html") ;;
+esac
 [ "$PERM" = "600" ] && ok "html 视图 600 权限" || bad "html 权限" "$PERM"
 rm -f "$FAKE/view.html"
 
