@@ -32,7 +32,7 @@ fi
 V="$FAKE/Vault/bin/vault"
 
 # ── 2. 版本与空库 ────────────────────────────────────────
-check "version"        "vault 0.1.1" "$("$V" version 2>&1)"
+check "version"        "vault 0.2.0" "$("$V" version 2>&1)"
 [ -z "$("$V" ls)" ] && ok "空库 ls 为空" || bad "空库 ls 为空" "$("$V" ls)"
 
 # ── 3. 建条目 + stdin 写值 + shape 回环 ──────────────────
@@ -87,6 +87,20 @@ check "import 计数" "导入 2 条" "$IMP_OUT"
 check "import 引号逗号字段" "P@ss,w0rd!quoted" "$("$V" get "工作/GitLab" password)"
 IMP2=$("$V" import "$FAKE/imp.csv" 2>&1)
 check "import 幂等（跳过已存在）" "跳过 2 条" "$IMP2"
+
+# ── 8b. kdbx 导出（KeePassXML 结构可解析、含 TOTP）──────
+"$V" kdbx "$FAKE/exp.xml" >/dev/null 2>&1 && ok "kdbx 导出" || bad "kdbx 导出" ""
+if [ -f "$FAKE/exp.xml" ]; then
+  KX=$(python3 -c "
+import xml.etree.ElementTree as ET
+t = ET.parse('$FAKE/exp.xml')
+es = list(t.getroot().iter('Entry'))
+otp = any(s.text == 'otp' for s in t.getroot().iter('Key'))
+print(f'{len(es)} {int(otp)}')")
+  set -- $KX
+  [ "${1:-0}" -ge 2 ] && ok "kdbx 条目数 (${1})" || bad "kdbx 条目数" "${1:-0}"
+  [ "${2:-0}" = "1" ] && ok "kdbx 含 TOTP otpauth" || bad "kdbx TOTP" ""
+fi
 
 # ── 9. html / clean ──────────────────────────────────────
 HTML_OUT="$("$V" html "$FAKE/view.html" 2>&1)"

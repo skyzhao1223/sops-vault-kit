@@ -9,7 +9,7 @@
 #   3. 所有写操作都改同一个 YAML 文件，改动可 git diff / git 回滚。
 set -euo pipefail
 
-VAULT_VERSION="0.1.1"
+VAULT_VERSION="0.2.0"
 VAULT_DIR="${VAULT_DIR:-$HOME/Vault}"
 SECRETS="${SECRETS_FILE:-$VAULT_DIR/secrets.yaml}"
 KEY_MAC="$HOME/Library/Application Support/sops/age/keys.txt"
@@ -167,7 +167,7 @@ cmd_html() {
 # 清理所有明文的临时文件（html 视图 / 导出的 CSV）
 cmd_clean() {
   local n=0 f
-  for f in /tmp/vault-view-*.html /tmp/vault-export-*.csv /tmp/vault-keycard-*.html; do
+  for f in /tmp/vault-view-*.html /tmp/vault-export-*.csv /tmp/vault-export-*.xml /tmp/vault-keycard-*.html; do
     [ -e "$f" ] || continue
     rm -f "$f"; n=$((n + 1))
   done
@@ -360,6 +360,18 @@ cmd_export() {
   chmod 600 "$out"
   printf '已导出明文 CSV: %s\n' "$out"
   printf '⚠️  这是明文文件：导入完成后请立刻 rm 掉，且不要提交到 git。\n'
+}
+
+# 导出 KeePassXML（明文 XML！）：给 KeePassXC / KeePassium（iPhone）导入用。
+# 这是"手机也能用"的官方路线：权威源仍是本库，导出的是快照。
+cmd_kdbx() {
+  check_key
+  local out="${1:-/tmp/vault-export-$(date +%Y%m%d-%H%M%S).xml}"
+  sj | python3 "$VAULT_DIR/bin/vault-kdbx.py" > "$out" || { rm -f "$out"; die "导出失败"; }
+  chmod 600 "$out"
+  printf '已导出 KeePassXML: %s\n' "$out"
+  printf '导入: KeePassXC → 数据库 → 导入 → KeePassXML；KeePassium(iPhone) → 直接打开该文件\n'
+  printf '⚠️  明文文件（含全部密码），导入完成后立即删除；vault clean 也会清理它\n'
 }
 
 # 用非敏感字段重新生成 systems.md 里的自动区块
@@ -699,6 +711,7 @@ vault —— 本地加密凭据库（免费 / 本地 / AI 可管理）
   vault remote <git 地址>      绑定备份仓库（建议私有仓库）
   vault push / vault pull      推 / 拉
   vault export [文件]          导出明文 CSV（给手机端导入，用完即删）
+  vault kdbx [文件]            导出 KeePassXML（KeePassXC/KeePassium 导入，含 TOTP，用完即删）
   vault doctor                 自检（密钥、权限、解密、git 状态）
   vault path                   打印库和密钥的位置
 EOF
@@ -746,6 +759,7 @@ main() {
     push)      cmd_push ;;
     pull)      cmd_pull ;;
     export)    check_key; cmd_export "${1:-}" ;;
+    kdbx)      cmd_kdbx "${1:-}" ;;
     *) die "未知命令: ${cmd}（运行 vault help 查看用法）" ;;
   esac
 }

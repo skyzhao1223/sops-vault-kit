@@ -18,6 +18,13 @@ git clone https://github.com/skyzhao1223/sops-vault-kit && cd sops-vault-kit
 vault keycard         # print your offline key backup card (do this immediately)
 ```
 
+## Screenshot
+
+`vault html` — the zero-dependency browser view (grouped cards, masked secrets,
+click-to-copy, live TOTP):
+
+![vault html browser view](docs/screenshot.png)
+
 ## Why another vault?
 
 Password managers (KeePassXC, Bitwarden, 1Password) store **binary blobs for humans**: no diff, no
