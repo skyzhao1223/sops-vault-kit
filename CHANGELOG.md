@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.1 — 2026-09-22
+
+### Fixed
+
+- **Helper scripts follow the script, not the vault dir**: `vault` resolved its
+  `*.py`/`*.html` helpers from `$VAULT_DIR/bin` — running a repo checkout against
+  another vault picked up the wrong (or a stale) helper. Now resolved via
+  `SELF_DIR` with full symlink resolution.
+- **install.sh symlink hijack guard**: installing with a non-default `VAULT_DIR`
+  used to repoint `~/.local/bin/vault` at the new location unconditionally (and a
+  later cleanup of that dir broke the global command). The link is now only
+  touched for the default `~/Vault`, a fresh link, or one already pointing at
+  this vault; otherwise a warning is printed. Regression-covered in smoke
+  (39 assertions).
+
 ## 0.4.0 — 2026-09-22
 
 ### Added

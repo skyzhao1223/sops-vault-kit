@@ -79,14 +79,21 @@ git -C "$VAULT_DIR" add -A
 git -C "$VAULT_DIR" commit -q -m "vault: init by sops-vault-kit"
 say "✓ git 仓库已初始化并完成首次提交"
 
-# ---- 7. 命令入口 ----
-mkdir -p "$HOME/.local/bin"
-ln -sfn "$VAULT_DIR/bin/vault" "$HOME/.local/bin/vault"
-case ":$PATH:" in
-  *":$HOME/.local/bin:"*) say "✓ vault 已链接到 ~/.local/bin（在 PATH 中）" ;;
-  *) say "⚠ ~/.local/bin 不在 PATH，请把下面一行加进你的 shell 配置："
-     echo "    export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
-esac
+# ---- 7. 命令入口（防劫持护栏：仅默认库位置或无冲突时才动全局软链）----
+_cur_link=""
+if [ -L "$HOME/.local/bin/vault" ]; then _cur_link="$(readlink "$HOME/.local/bin/vault")"; fi
+if [ "$VAULT_DIR" = "$HOME/Vault" ] || [ -z "$_cur_link" ] || [ "$_cur_link" = "$VAULT_DIR/bin/vault" ]; then
+  mkdir -p "$HOME/.local/bin"
+  ln -sfn "$VAULT_DIR/bin/vault" "$HOME/.local/bin/vault"
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) say "✓ vault 已链接到 ~/.local/bin（在 PATH 中）" ;;
+    *) say "⚠ ~/.local/bin 不在 PATH，请把下面一行加进你的 shell 配置："
+       echo "    export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+  esac
+else
+  say "⚠ ~/.local/bin/vault 已指向 $_cur_link —— 本次 VAULT_DIR=$VAULT_DIR 非默认位置，未改动全局软链"
+  say "  本库可直接用: $VAULT_DIR/bin/vault，或运行时指定 VAULT_DIR=$VAULT_DIR"
+fi
 
 # ---- 8. 自检 ----
 say ""

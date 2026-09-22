@@ -32,7 +32,7 @@ fi
 V="$FAKE/Vault/bin/vault"
 
 # ── 2. 版本与空库 ────────────────────────────────────────
-check "version"        "vault 0.4.0" "$("$V" version 2>&1)"
+check "version"        "vault 0.4.1" "$("$V" version 2>&1)"
 [ -z "$("$V" ls)" ] && ok "空库 ls 为空" || bad "空库 ls 为空" "$("$V" ls)"
 
 # ── 3. 建条目 + stdin 写值 + shape 回环 ──────────────────
@@ -136,6 +136,11 @@ check "en set 消息" "Set 服务/Stripe.en_probe" "$SET_EN"
 "$V" rm "生活/电商" >/dev/null 2>&1
 "$V" ls | grep -q "生活/电商" && bad "rm 删除条目" || ok "rm 删除条目"
 "$V" doctor >/dev/null 2>&1 && ok "doctor 全绿" || bad "doctor" "$("$V" doctor 2>&1 | tail -3)"
+
+# ── 11. install 护栏：非默认 VAULT_DIR 不得劫持全局软链 ──
+(cd "$KIT" && VAULT_DIR="$FAKE/alt-vault" ./install.sh) >/dev/null 2>&1
+LINK_NOW=$(readlink "$FAKE/.local/bin/vault")
+[ "$LINK_NOW" = "$FAKE/Vault/bin/vault" ] && ok "install 护栏：软链未被劫持" || bad "install 护栏" "$LINK_NOW"
 
 printf '\n═══ 冒烟结果: %d 通过 / %d 失败 ═══\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

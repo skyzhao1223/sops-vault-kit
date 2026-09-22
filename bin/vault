@@ -9,7 +9,16 @@
 #   3. 所有写操作都改同一个 YAML 文件，改动可 git diff / git 回滚。
 set -euo pipefail
 
-VAULT_VERSION="0.4.0"
+VAULT_VERSION="0.4.1"
+
+# 辅助脚本（*.py / *.html）与本脚本同目录分发；解析符号链接（如 ~/.local/bin/vault）
+_SELF="$0"
+while [ -L "$_SELF" ]; do
+  _D="$(cd "$(dirname "$_SELF")" && pwd)"
+  _SELF="$(readlink "$_SELF")"
+  case "$_SELF" in /*) ;; *) _SELF="$_D/$_SELF" ;; esac
+done
+SELF_DIR="$(cd "$(dirname "$_SELF")" && pwd)"
 VAULT_DIR="${VAULT_DIR:-$HOME/Vault}"
 SECRETS="${SECRETS_FILE:-$VAULT_DIR/secrets.yaml}"
 KEY_MAC="$HOME/Library/Application Support/sops/age/keys.txt"
@@ -195,7 +204,7 @@ cmd_show() {
 # 只报告 stdin 内容的"形状"，绝不输出内容本身（实现在 bin/vault-shape.py）。
 # 用途：pbpaste | vault shape —— 入库前体检剪贴板
 cmd_shape() {
-  python3 "$VAULT_DIR/bin/vault-shape.py"
+  python3 "$SELF_DIR/vault-shape.py"
 }
 
 # ---- 明文查看的三个层次（残留面从小到大）----
@@ -225,11 +234,11 @@ cmd_view() {
 
 # ③ 浏览器卡片视图：分组、全字段、TOTP 实时；会写一个 600 权限的明文临时文件
 cmd_html() {
-  local tpl="$VAULT_DIR/bin/vault-view.html"
+  local tpl="$SELF_DIR/vault-view.html"
   local out="${1:-/tmp/vault-view-$(date +%Y%m%d-%H%M%S).html}"
   check_key
   [ -f "$tpl" ] || die "$(t err.no_tpl "$tpl")"
-  sj | python3 "$VAULT_DIR/bin/vault-render.py" "$tpl" "$VAULT_DIR/.sops.yaml" > "$out"
+  sj | python3 "$SELF_DIR/vault-render.py" "$tpl" "$VAULT_DIR/.sops.yaml" > "$out"
   chmod 600 "$out"
   if command -v open >/dev/null 2>&1; then open "$out"
   elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$out"
@@ -456,7 +465,7 @@ cmd_export() {
 cmd_kdbx() {
   check_key
   local out="${1:-/tmp/vault-export-$(date +%Y%m%d-%H%M%S).xml}"
-  sj | python3 "$VAULT_DIR/bin/vault-kdbx.py" > "$out" || { rm -f "$out"; die "$(t err.export_fail)"; }
+  sj | python3 "$SELF_DIR/vault-kdbx.py" > "$out" || { rm -f "$out"; die "$(t err.export_fail)"; }
   chmod 600 "$out"
   t kdbx.ok "$out"
   t kdbx.howto
@@ -490,7 +499,7 @@ cmd_md() {
 
 # 检查加密后的文件：确认敏感字段真的没有以明文存在（不需要 age 密钥）
 cmd_audit() {
-  python3 "$VAULT_DIR/bin/vault-audit.py" "$VAULT_DIR/.sops.yaml" "$SECRETS"
+  python3 "$SELF_DIR/vault-audit.py" "$VAULT_DIR/.sops.yaml" "$SECRETS"
 }
 
 # 按当前 .sops.yaml 重新加密整个库。
@@ -722,7 +731,7 @@ cmd_import() {
   [ -f "$csv" ] || die "找不到 CSV: $csv"
   check_key
   local jsonl; jsonl="$(mktemp "${TMPDIR:-/tmp}/vault-import.XXXXXX")"
-  if ! python3 "$VAULT_DIR/bin/vault-import.py" "$csv" "$fmt" > "$jsonl"; then
+  if ! python3 "$SELF_DIR/vault-import.py" "$csv" "$fmt" > "$jsonl"; then
     rm -f "$jsonl"; die "CSV 解析失败（检查编码/表头，或用 --format 显式指定）"
   fi
   local n=0 skipped=0 line name url user pass totp note
