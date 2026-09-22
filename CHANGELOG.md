@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0 — 2026-09-22
+
+### Added
+
+- **English CLI**: `VAULT_LANG=en` switches all command messages and a fully
+  translated `vault help` (default stays Chinese; missing keys degrade
+  gracefully to zh).
+- `vault sort` — reorder all entries by name via a verified whole-file round trip.
+- `vault shape` output is bilingual too (respects `VAULT_LANG`).
+- Smoke suite: 38 assertions (adds sort ordering + English message paths).
+
 ## 0.3.0 — 2026-09-22
 
 ### Added

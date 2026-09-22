@@ -32,7 +32,7 @@ fi
 V="$FAKE/Vault/bin/vault"
 
 # ── 2. 版本与空库 ────────────────────────────────────────
-check "version"        "vault 0.3.0" "$("$V" version 2>&1)"
+check "version"        "vault 0.4.0" "$("$V" version 2>&1)"
 [ -z "$("$V" ls)" ] && ok "空库 ls 为空" || bad "空库 ls 为空" "$("$V" ls)"
 
 # ── 3. 建条目 + stdin 写值 + shape 回环 ──────────────────
@@ -118,6 +118,19 @@ case "$(uname -s)" in
 esac
 [ "$PERM" = "600" ] && ok "html 视图 600 权限" || bad "html 权限" "$PERM"
 rm -f "$FAKE/view.html"
+
+# ── 9b. sort + VAULT_LANG=en ─────────────────────────────
+"$V" new "测试/zzz" --no-password >/dev/null 2>&1
+"$V" new "测试/aaa" --no-password >/dev/null 2>&1
+"$V" sort >/dev/null 2>&1 && ok "sort 执行" || bad "sort" ""
+A_LINE=$("$V" peek | grep -n '^测试/aaa$' | cut -d: -f1)
+Z_LINE=$("$V" peek | grep -n '^测试/zzz$' | cut -d: -f1)
+[ -n "$A_LINE" ] && [ -n "$Z_LINE" ] && [ "$A_LINE" -lt "$Z_LINE" ] && ok "sort 字典序生效" || bad "sort 顺序" "aaa=$A_LINE zzz=$Z_LINE"
+"$V" rm "测试/zzz" >/dev/null 2>&1; "$V" rm "测试/aaa" >/dev/null 2>&1
+check "en help" "list entries" "$(VAULT_LANG=en "$V" help)"
+SET_EN=$(printf 'x12345678901' | VAULT_LANG=en "$V" set "服务/Stripe" en_probe - 2>&1)
+check "en set 消息" "Set 服务/Stripe.en_probe" "$SET_EN"
+"$V" rm "服务/Stripe" en_probe >/dev/null 2>&1
 
 # ── 10. rm / doctor ──────────────────────────────────────
 "$V" rm "生活/电商" >/dev/null 2>&1

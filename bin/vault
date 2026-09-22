@@ -9,7 +9,7 @@
 #   3. 所有写操作都改同一个 YAML 文件，改动可 git diff / git 回滚。
 set -euo pipefail
 
-VAULT_VERSION="0.3.0"
+VAULT_VERSION="0.4.0"
 VAULT_DIR="${VAULT_DIR:-$HOME/Vault}"
 SECRETS="${SECRETS_FILE:-$VAULT_DIR/secrets.yaml}"
 KEY_MAC="$HOME/Library/Application Support/sops/age/keys.txt"
@@ -24,15 +24,89 @@ fi
 
 die() { printf 'vault: %s\n' "$*" >&2; exit 1; }
 
+# 双语消息层：t <key> [printf 参数...]。VAULT_LANG=en 输出英文，默认中文；
+# 字典缺失的 key 原样输出（优雅降级）。错误路径用 die "$(t key args)"。
+VAULT_LANG="${VAULT_LANG:-zh}"
+t() {
+  local key="$1"; shift
+  local zh="" en=""
+  case "$key" in
+    err.no_sops) zh='缺少 sops：brew install sops'; en='sops not found: brew install sops' ;;
+    err.no_jq) zh='缺少 jq：brew install jq'; en='jq not found: brew install jq' ;;
+    err.no_file) zh='找不到 %s'; en='Not found: %s' ;;
+    err.no_key) zh='找不到 age 密钥。已查找: SOPS_AGE_KEY_FILE 环境变量、%s、%s'; en='age key not found. Searched: SOPS_AGE_KEY_FILE env, %s, %s' ;;
+    err.no_tpl) zh='缺少模板 %s'; en='Template not found: %s' ;;
+    err.stdin_empty) zh='stdin 为空，拒绝写入空值'; en='stdin is empty; refusing to write an empty value' ;;
+    err.set_fail) zh='设置失败: %s（sops set 与整文件重建均失败）'; en='Set failed: %s (both sops set and whole-file rebuild failed)' ;;
+    err.field_kv) zh='--field 需要 k=v 形式，例如 --field appkey=abc123'; en='--field needs k=v form, e.g. --field appkey=abc123' ;;
+    err.gen_name) zh='--gen 需要字段名，例如 --gen appsecret'; en='--gen needs a field name, e.g. --gen appsecret' ;;
+    err.unknown_arg) zh='未知参数: %s'; en='Unknown option: %s' ;;
+    err.create_fail) zh='创建失败: %s（sops set 与整文件重建均失败）'; en='Create failed: %s (both sops set and whole-file rebuild failed)' ;;
+    err.field_fail) zh='字段设置失败: %s'; en='Field set failed: %s' ;;
+    err.rm_fail) zh='删除失败（条目或字段不存在？）: %s'; en='Delete failed (entry or field missing?): %s' ;;
+    err.same_name) zh='新旧名称相同'; en='Old and new names are identical' ;;
+    err.not_found) zh='条目不存在: %s'; en='Entry not found: %s' ;;
+    err.exists) zh='目标已存在，拒绝覆盖: %s'; en='Target exists, refusing to overwrite: %s' ;;
+    err.rename_fail) zh='重命名失败: %s'; en='Rename failed: %s' ;;
+    err.no_clipboard) zh='找不到剪贴板工具（macOS: pbcopy / Wayland: wl-copy / X11: xclip 或 xsel）'; en='No clipboard tool found (macOS: pbcopy / Wayland: wl-copy / X11: xclip or xsel)' ;;
+    err.no_totp) zh='%s 里没有存 totp 种子'; en='No totp seed stored for %s' ;;
+    err.export_fail) zh='导出失败'; en='Export failed' ;;
+    err.reencrypt_fail) zh='重新加密失败，原文件未改动'; en='Re-encryption failed; original file untouched' ;;
+    err.reencrypt_mismatch) zh='校验失败：条目数 %s → %s，原文件未改动'; en='Verify failed: entry count %s → %s; original file untouched' ;;
+    err.backup_mkdir) zh='无法创建备份目录: %s'; en='Cannot create backup directory: %s' ;;
+    err.bundle_fail) zh='创建 bundle 失败'; en='Bundle creation failed' ;;
+    err.bundle_verify) zh='备份文件校验失败: %s'; en='Backup verification failed: %s' ;;
+    err.bundle_bad) zh='不是有效的 git bundle 或文件已损坏: %s'; en='Not a valid git bundle or file corrupted: %s' ;;
+    err.dest_exists) zh='目标目录已存在，拒绝覆盖: %s'; en='Destination exists, refusing to overwrite: %s' ;;
+    err.restore_fail) zh='恢复失败'; en='Restore failed' ;;
+    err.unknown_cmd) zh='未知命令: %s（运行 vault help 查看用法）'; en='Unknown command: %s (run vault help)' ;;
+    err.sort_fail) zh='排序失败'; en='Sort failed' ;;
+    set.ok) zh='已设置 %s.%s'; en='Set %s.%s' ;;
+    new.ok) zh='已创建 %s'; en='Created %s' ;;
+    new.pwgen) zh='已创建 %s（已生成 24 位随机密码，未打印；用 vault copy "%s" 取到剪贴板）'; en='Created %s (24-char random password generated, not printed; retrieve with vault copy "%s")' ;;
+    rm.field) zh='已删除 %s.%s'; en='Deleted %s.%s' ;;
+    rm.entry) zh='已删除 %s'; en='Deleted %s' ;;
+    rename.ok) zh='已重命名 %s → %s'; en='Renamed %s → %s' ;;
+    sort.ok) zh='已按名称排序全部条目（%s 条）'; en='Sorted all entries by name (%s)' ;;
+    copy.ok) zh='已复制到剪贴板（未打印内容）'; en='Copied to clipboard (not printed)' ;;
+    save.none) zh='没有需要提交的改动'; en='Nothing to commit' ;;
+    html.ok) zh='已生成明文页面并在浏览器打开：'; en='Plaintext page generated and opened in browser:' ;;
+    html.warn) zh='⚠️  看完请关闭标签页，并执行： vault clean'; en='⚠️  Close the tab when done, then run: vault clean' ;;
+    clean.ok) zh='已清理 %d 个明文临时文件'; en='Removed %d plaintext temp file(s)' ;;
+    export.ok) zh='已导出明文 CSV: %s'; en='Plaintext CSV exported: %s' ;;
+    export.warn) zh='⚠️  这是明文文件：导入完成后请立刻 rm 掉，且不要提交到 git。'; en='⚠️  Plaintext file: delete it right after import; never commit to git.' ;;
+    kdbx.ok) zh='已导出 KeePassXML: %s'; en='KeePassXML exported: %s' ;;
+    kdbx.howto) zh='导入: KeePassXC → 数据库 → 导入 → KeePassXML；KeePassium(iPhone) → 直接打开该文件'; en='Import: KeePassXC → Database → Import → KeePassXML; KeePassium (iPhone) → open the file directly' ;;
+    kdbx.warn) zh='⚠️  明文文件（含全部密码），导入完成后立即删除；vault clean 也会清理它'; en='⚠️  Plaintext file (all passwords): delete right after import; vault clean removes it too' ;;
+    md.ok) zh='已更新 %s 的自动区块（仅非敏感字段）'; en='Updated the auto block in %s (non-sensitive fields only)' ;;
+    reencrypt.ok) zh='已按当前规则重新加密：%s 条记录'; en='Re-encrypted per current rules: %s entries' ;;
+    backup.dirty) zh='⚠️  有未提交改动，本次备份只含已提交内容（先 vault save 可全量）'; en='⚠️  Uncommitted changes exist; backup covers committed content only (run vault save first)' ;;
+    backup.ok) zh='✓ 已备份: %s'; en='✓ Backed up: %s' ;;
+    backup.size) zh='  大小 %s，含全部 git 历史（%s 次提交）'; en='  Size %s, full git history (%s commits)' ;;
+    backup.restore) zh='  恢复: vault restore "%s"'; en='  Restore: vault restore "%s"' ;;
+    restore.ok) zh='✓ 已恢复到: %s（%s 条记录，解密验证通过）'; en='✓ Restored to: %s (%s entries, decryption verified)' ;;
+    restore.use) zh='  直接使用: VAULT_DIR="%s" vault ls'; en='  Use directly: VAULT_DIR="%s" vault ls' ;;
+    restore.swap) zh='  或替换旧库: 先把旧 ~/Vault 移走，再 mv "%s" ~/Vault'; en='  Or replace: move the old ~/Vault away, then mv "%s" ~/Vault' ;;
+    edit.hint) zh='编辑器: %s（保存并关闭标签页 = 自动重新加密入库）'; en='Editor: %s (save & close the tab = auto re-encrypt)' ;;
+    keycard.ok) zh='密钥备份卡已生成并在浏览器打开：'; en='Key backup card generated and opened in browser:' ;;
+    keycard.warn) zh='⚠️  卡片含明文私钥：打印 2 份异地保存后，执行 vault clean 删除'; en='⚠️  Card holds the plaintext private key: print 2 copies, store apart, then vault clean' ;;
+    *) zh="$key"; en="$key" ;;
+  esac
+  local fmt="$zh"
+  [ "$VAULT_LANG" = "en" ] && fmt="$en"
+  printf "$fmt\n" "$@"
+}
+
+
 check() {
-  command -v sops >/dev/null 2>&1 || die "缺少 sops：brew install sops"
-  command -v jq   >/dev/null 2>&1 || die "缺少 jq：brew install jq"
-  [ -f "$SECRETS" ] || die "找不到 $SECRETS"
+  command -v sops >/dev/null 2>&1 || die "$(t err.no_sops)"
+  command -v jq   >/dev/null 2>&1 || die "$(t err.no_jq)"
+  [ -f "$SECRETS" ] || die "$(t err.no_file "$SECRETS")"
 }
 
 check_key() {
   [ -n "${SOPS_AGE_KEY_FILE:-}" ] && [ -f "${SOPS_AGE_KEY_FILE:-}" ] \
-    || die "找不到 age 密钥。已查找: SOPS_AGE_KEY_FILE 环境变量、$KEY_MAC、$KEY_XDG"
+    || die "$(t err.no_key "$KEY_MAC" "$KEY_XDG")"
 }
 
 # sops 路径语法：每级各自一个方括号，例如 ["systems"]["工作/VPN"]["password"]
@@ -154,14 +228,14 @@ cmd_html() {
   local tpl="$VAULT_DIR/bin/vault-view.html"
   local out="${1:-/tmp/vault-view-$(date +%Y%m%d-%H%M%S).html}"
   check_key
-  [ -f "$tpl" ] || die "缺少模板 $tpl"
+  [ -f "$tpl" ] || die "$(t err.no_tpl "$tpl")"
   sj | python3 "$VAULT_DIR/bin/vault-render.py" "$tpl" "$VAULT_DIR/.sops.yaml" > "$out"
   chmod 600 "$out"
   if command -v open >/dev/null 2>&1; then open "$out"
   elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$out"
   fi
-  printf '已生成明文页面并在浏览器打开：\n  %s\n' "$out"
-  printf '⚠️  看完请关闭标签页，并执行： vault clean\n'
+  t html.ok; printf '  %s\n' "$out"
+  t html.warn
 }
 
 # 清理所有明文的临时文件（html 视图 / 导出的 CSV）
@@ -171,7 +245,7 @@ cmd_clean() {
     [ -e "$f" ] || continue
     rm -f "$f"; n=$((n + 1))
   done
-  printf '已清理 %d 个明文临时文件\n' "$n"
+  t clean.ok "$n"
 }
 
 # 整文件往返：解密 → jq 合并 → 重新加密（明文只经管道与 600 权限临时文件，校验通过才替换）。
@@ -200,15 +274,15 @@ cmd_set() {
   # 用途：让密码值不经过命令行参数、shell 历史和任何日志（进程列表可见参数！）
   if [ "$value" = "-" ]; then
     value="$(cat)"
-    [ -n "$value" ] || die "stdin 为空，拒绝写入空值"
+    [ -n "$value" ] || die "$(t err.stdin_empty)"
   fi
   check_key
   if ! sops set --idempotent "$SECRETS" "$(jpath "$name" "$field")" "$(jstr "$value")" >/dev/null 2>&1; then
     _roundtrip_merge '.systems = (.systems // {}) | .systems[$n] = ((.systems[$n] // {}) + {($f): $v})' \
       --arg n "$name" --arg f "$field" --arg v "$value" \
-      || die "设置失败: $name.$field（sops set 与整文件重建均失败）"
+      || die "$(t err.set_fail "$name.$field")"
   fi
-  printf '已设置 %s.%s\n' "$name" "$field"
+  t set.ok "$name" "$field"
 }
 
 cmd_new() {
@@ -227,16 +301,16 @@ cmd_new() {
       --note)     note="${2-}";     shift 2 ;;
       --field)
         kv="${2-}"; fk="${kv%%=*}"; fv="${kv#*=}"
-        [ "$fk" != "$kv" ] || die "--field 需要 k=v 形式，例如 --field appkey=abc123"
+        [ "$fk" != "$kv" ] || die "$(t err.field_kv)"
         ex_keys+=("$fk"); ex_vals+=("$fv")
         shift 2 ;;
       --gen)
         fk="${2-}"
-        [ -n "$fk" ] || die "--gen 需要字段名，例如 --gen appsecret"
+        [ -n "$fk" ] || die "$(t err.gen_name)"
         ex_keys+=("$fk"); ex_vals+=("$(genpw)")
         shift 2 ;;
       --no-password) no_pw=1; shift ;;
-      *) die "未知参数: $1" ;;
+      *) die "$(t err.unknown_arg "$1")" ;;
     esac
   done
   if [ "$pw_given" -eq 0 ] && [ "$no_pw" -eq 0 ]; then password="$(genpw)"; fi
@@ -265,22 +339,22 @@ cmd_new() {
     ' --arg n "$name" --arg url "$url" --arg u "$username" \
       --arg p "$( [ "$no_pw" -eq 1 ] && printf '' || printf '%s' "$password" )" \
       --arg e "$env" --arg o "$owner" --arg note "$note" \
-      || die "创建失败: $name（sops set 与整文件重建均失败）"
+      || die "$(t err.create_fail "$name")"
   fi
   # 追加自定义字段（--field/--gen），同样带兜底
   for i in ${ex_keys+"${!ex_keys[@]}"}; do
     if ! sops set --idempotent "$SECRETS" "$(jpath "$name" "${ex_keys[$i]}")" "$(jstr "${ex_vals[$i]}")" >/dev/null 2>&1; then
       _roundtrip_merge '.systems = (.systems // {}) | .systems[$n] = ((.systems[$n] // {}) + {($f): $v})' \
         --arg n "$name" --arg f "${ex_keys[$i]}" --arg v "${ex_vals[$i]}" \
-        || die "字段设置失败: ${ex_keys[$i]}"
+        || die "$(t err.field_fail "${ex_keys[$i]}")"
     fi
   done
 
-  printf '已创建 %s' "$name"
   if [ "$no_pw" -eq 0 ] && [ "$pw_given" -eq 0 ]; then
-    printf '（已生成 24 位随机密码，未打印；用 vault copy "%s" 取到剪贴板）' "$name"
+    t new.pwgen "$name" "$name"
+  else
+    t new.ok "$name"
   fi
-  printf '\n'
 }
 cmd_rm() {
   local name="${1:?用法: vault rm <系统> [字段]}"
@@ -289,24 +363,24 @@ cmd_rm() {
   local target
   if [ -n "$field" ]; then target="$(jpath "$name" "$field")"; else target="$(jpath "$name")"; fi
   if ! sops unset --idempotent "$SECRETS" "$target" >/dev/null 2>&1; then
-    die "删除失败（条目或字段不存在？）: $name${field:+.$field}"
+    die "$(t err.rm_fail "$name${field:+.$field}")"
   fi
-  if [ -n "$field" ]; then printf '已删除 %s.%s\n' "$name" "$field"
-  else printf '已删除 %s\n' "$name"; fi
+  if [ -n "$field" ]; then t rm.field "$name" "$field"
+  else t rm.entry "$name"; fi
 }
 
 # 重命名条目（sops 无原生 rename：整文件往返搬移子树，校验后原子替换）
 cmd_rename() {
   local old="${1:?用法: vault rename <旧系统名> <新系统名>}"
   local new="${2:?缺少新系统名}"
-  [ "$old" != "$new" ] || die "新旧名称相同"
-  cmd_peek | grep -Fxq "$old" || die "条目不存在: $old"
-  if cmd_peek | grep -Fxq "$new"; then die "目标已存在，拒绝覆盖: $new"; fi
+  [ "$old" != "$new" ] || die "$(t err.same_name)"
+  cmd_peek | grep -Fxq "$old" || die "$(t err.not_found "$old")"
+  if cmd_peek | grep -Fxq "$new"; then die "$(t err.exists "$new")"; fi
   check_key
   _roundtrip_merge '.systems = (.systems // {}) | .systems[$new] = .systems[$old] | del(.systems[$old])' \
-    --arg old "$old" --arg new "$new" || die "重命名失败: $old"
+    --arg old "$old" --arg new "$new" || die "$(t err.rename_fail "$old")"
   cmd_md >/dev/null 2>&1 || true
-  printf '已重命名 %s → %s\n' "$old" "$new"
+  t rename.ok "$old" "$new"
 }
 
 cmd_copy() {
@@ -315,10 +389,10 @@ cmd_copy() {
   elif command -v wl-copy >/dev/null 2>&1; then copier="wl-copy"
   elif command -v xclip   >/dev/null 2>&1; then copier="xclip -selection clipboard"
   elif command -v xsel    >/dev/null 2>&1; then copier="xsel -b"
-  else die "找不到剪贴板工具（macOS: pbcopy / Wayland: wl-copy / X11: xclip 或 xsel）"
+  else die "$(t err.no_clipboard)"
   fi
   _get_raw "$1" "${2:-password}" | $copier
-  printf '已复制到剪贴板（未打印内容）\n'
+  t copy.ok
 }
 
 # 只在非敏感字段里搜索：系统名 / url / username / note / env / owner
@@ -347,7 +421,7 @@ cmd_totp() {
   local name="${1:?用法: vault totp <系统>}"
   local seed
   seed="$(_get_raw "$name" totp)"
-  [ -n "$seed" ] || die "$name 里没有存 totp 种子"
+  [ -n "$seed" ] || die "$(t err.no_totp "$name")"
   python3 - "$seed" <<'PY'
 import sys, base64, hmac, hashlib, struct, time
 s = sys.argv[1].strip().replace(" ", "").replace("-", "").upper()
@@ -373,8 +447,8 @@ cmd_export() {
         ((.value.note//"") | gsub("[\r\n]+"; " ")) ]
     | @csv' > "$out"
   chmod 600 "$out"
-  printf '已导出明文 CSV: %s\n' "$out"
-  printf '⚠️  这是明文文件：导入完成后请立刻 rm 掉，且不要提交到 git。\n'
+  t export.ok "$out"
+  t export.warn
 }
 
 # 导出 KeePassXML（明文 XML！）：给 KeePassXC / KeePassium（iPhone）导入用。
@@ -382,17 +456,17 @@ cmd_export() {
 cmd_kdbx() {
   check_key
   local out="${1:-/tmp/vault-export-$(date +%Y%m%d-%H%M%S).xml}"
-  sj | python3 "$VAULT_DIR/bin/vault-kdbx.py" > "$out" || { rm -f "$out"; die "导出失败"; }
+  sj | python3 "$VAULT_DIR/bin/vault-kdbx.py" > "$out" || { rm -f "$out"; die "$(t err.export_fail)"; }
   chmod 600 "$out"
-  printf '已导出 KeePassXML: %s\n' "$out"
-  printf '导入: KeePassXC → 数据库 → 导入 → KeePassXML；KeePassium(iPhone) → 直接打开该文件\n'
-  printf '⚠️  明文文件（含全部密码），导入完成后立即删除；vault clean 也会清理它\n'
+  t kdbx.ok "$out"
+  t kdbx.howto
+  t kdbx.warn
 }
 
 # 用非敏感字段重新生成 systems.md 里的自动区块
 cmd_md() {
   local md="$VAULT_DIR/systems.md" tmp rowsf
-  [ -f "$md" ] || die "找不到 $md"
+  [ -f "$md" ] || die "$(t err.no_file "$md")"
   rowsf="$(mktemp)"; tmp="$(mktemp)"
   sj | jq -r '
     def d: if (. // "") == "" then "-" else . end;
@@ -411,7 +485,7 @@ cmd_md() {
     /<!-- END AUTO -->/ { skip = 0 }
     !skip               { print }' "$md" > "$tmp"
   mv "$tmp" "$md"; rm -f "$rowsf"
-  printf '已更新 %s 的自动区块（仅非敏感字段）\n' "$md"
+  t md.ok "$md"
 }
 
 # 检查加密后的文件：确认敏感字段真的没有以明文存在（不需要 age 密钥）
@@ -430,14 +504,14 @@ cmd_reencrypt() {
   if ! ( cd "$VAULT_DIR" \
          && sops decrypt --input-type yaml --output-type yaml "$SECRETS" \
          | sops encrypt --input-type yaml --output-type yaml --filename-override "$SECRETS" /dev/stdin ) > "$tmp"; then
-    rm -f "$tmp"; die "重新加密失败，原文件未改动"
+    rm -f "$tmp"; die "$(t err.reencrypt_fail)"
   fi
   after="$(sops decrypt --input-type yaml --output-type json "$tmp" 2>/dev/null | jq -r '.systems // {} | length')"
   if [ "$after" != "$before" ]; then
-    rm -f "$tmp"; die "校验失败：条目数 $before → ${after:-?}，原文件未改动"
+    rm -f "$tmp"; die "$(t err.reencrypt_mismatch "$before" "${after:-?}")"
   fi
   chmod 600 "$tmp"; mv "$tmp" "$SECRETS"
-  printf '已按当前规则重新加密：%s 条记录\n' "$after"
+  t reencrypt.ok "$after"
 }
 
 # ---- 备份与恢复 ----
@@ -450,46 +524,46 @@ cmd_backup() {
     local icloud="$HOME/Library/Mobile Documents/com~apple~CloudDocs"
     if [ -d "$icloud" ]; then dest="$icloud/VaultBackups"; else dest="$HOME/VaultBackups"; fi
   fi
-  mkdir -p "$dest" || die "无法创建备份目录: $dest"
+  mkdir -p "$dest" || die "$(t err.backup_mkdir "$dest")"
   if [ -n "$(git -C "$VAULT_DIR" status --porcelain)" ]; then
-    printf '⚠️  有未提交改动，本次备份只含已提交内容（先 vault save 可全量）\n' >&2
+    t backup.dirty >&2
   fi
   local stamp name tmpd tmp
   stamp="$(date +%Y%m%d-%H%M%S)"
   name="vault-$stamp.bundle"
   tmpd="$(mktemp -d)"; tmp="$tmpd/vault.bundle"
   if ! git -C "$VAULT_DIR" bundle create "$tmp" --all; then
-    rm -rf "$tmpd"; die "创建 bundle 失败"
+    rm -rf "$tmpd"; die "$(t err.bundle_fail)"
   fi
   mv "$tmp" "$dest/$name"; rm -rf "$tmpd"
-  git -C "$VAULT_DIR" bundle verify "$dest/$name" >/dev/null 2>&1 || die "备份文件校验失败: $dest/$name"
+  git -C "$VAULT_DIR" bundle verify "$dest/$name" >/dev/null 2>&1 || die "$(t err.bundle_verify "$dest/$name")"
   { ls -1t "$dest"/vault-*.bundle 2>/dev/null | tail -n +6 | while read -r f; do rm -f "$f"; done; } || true
-  printf '✓ 已备份: %s\n' "$dest/$name"
-  printf '  大小 %s，含全部 git 历史（%s 次提交）\n' "$(du -h "$dest/$name" | cut -f1)" "$(git -C "$VAULT_DIR" rev-list --count HEAD)"
-  printf '  恢复: vault restore "%s"\n' "$dest/$name"
+  t backup.ok "$dest/$name"
+  t backup.size "$(du -h "$dest/$name" | cut -f1)" "$(git -C "$VAULT_DIR" rev-list --count HEAD)"
+  t backup.restore "$dest/$name"
 }
 
 # 从 bundle 恢复到新目录，绝不覆盖现有库
 cmd_restore() {
   local bundle="${1:?用法: vault restore <备份文件.bundle> [目标目录]}"
   local dest="${2:-$HOME/Vault-restored-$(date +%Y%m%d-%H%M%S)}"
-  [ -f "$bundle" ] || die "找不到备份文件: $bundle"
+  [ -f "$bundle" ] || die "$(t err.no_file "$bundle")"
   # verify 需要 git 仓库上下文；新机器上可能没有 → 用一次性空仓库做校验
   local scratch; scratch="$(mktemp -d)"
   git init -q "$scratch"
-  git -C "$scratch" bundle verify "$bundle" >/dev/null 2>&1 || { rm -rf "$scratch"; die "不是有效的 git bundle 或文件已损坏: $bundle"; }
+  git -C "$scratch" bundle verify "$bundle" >/dev/null 2>&1 || { rm -rf "$scratch"; die "$(t err.bundle_bad "$bundle")"; }
   rm -rf "$scratch"
-  [ -e "$dest" ] && die "目标目录已存在，拒绝覆盖: $dest"
+  [ -e "$dest" ] && die "$(t err.dest_exists "$dest")"
   check_key
-  git clone -q "$bundle" "$dest" || die "恢复失败"
+  git clone -q "$bundle" "$dest" || die "$(t err.restore_fail)"
   local n
   n="$(sops decrypt --output-type json "$dest/secrets.yaml" 2>/dev/null | jq -r '.systems // {} | length' 2>/dev/null)"
   if [ -z "$n" ] || [ "$n" = "null" ]; then
     die "恢复出来的库无法解密（age 密钥对吗？）——文件保留在 $dest"
   fi
-  printf '✓ 已恢复到: %s（%s 条记录，解密验证通过）\n' "$dest" "$n"
-  printf '  直接使用: VAULT_DIR="%s" vault ls\n' "$dest"
-  printf '  或替换旧库: 先把旧 ~/Vault 移走，再 mv "%s" ~/Vault\n' "$dest"
+  t restore.ok "$dest" "$n"
+  t restore.use "$dest"
+  t restore.swap "$dest"
 }
 
 # 生成 age 密钥的离线备份卡（HTML，浏览器打开打印）。
@@ -546,8 +620,8 @@ HTML
   if command -v open >/dev/null 2>&1; then open "$out"
   elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$out"
   fi
-  printf '密钥备份卡已生成并在浏览器打开：\n  %s\n' "$out"
-  printf '⚠️  卡片含明文私钥：打印 2 份异地保存后，执行 vault clean 删除\n'
+  t keycard.ok; printf '  %s\n' "$out"
+  t keycard.warn
 }
 
 # 整库编辑：sops 官方机制 —— 解密 → 编辑器打开 → 保存退出时自动重新加密。
@@ -562,14 +636,14 @@ cmd_edit() {
     elif command -v vim >/dev/null 2>&1; then ed="vim"
     else ed="vi"; fi
   fi
-  printf '编辑器: %s（保存并关闭标签页 = 自动重新加密入库）\n' "$ed"
+  t edit.hint "$ed"
   EDITOR="$ed" sops edit "$SECRETS"
 }
 
 cmd_save() {
   git -C "$VAULT_DIR" add -A
   if git -C "$VAULT_DIR" diff --cached --quiet; then
-    printf '没有需要提交的改动\n'; return 0
+    t save.none; return 0
   fi
   git -C "$VAULT_DIR" commit -q -m "${1:-vault: update $(date '+%Y-%m-%d %H:%M')}"
   git -C "$VAULT_DIR" --no-pager log -1 --stat --oneline
@@ -677,6 +751,75 @@ cmd_import() {
   printf '⚠️  源 CSV 是明文，用完立即删除：rm -P "%s"（macOS）或 shred -u\n' "$csv"
 }
 
+usage_en() {
+  cat <<'EOF'
+vault — local encrypted credential store (sops + age + git; free, local, AI-manageable)
+
+Read
+  vault ls [filter]            list entries (name / env / owner / url); no decryption
+  vault peek                   list entry names straight from the ciphertext (no key needed)
+  vault meta                   whole-vault JSON metadata (no decryption; for UI/AI)
+  vault show <entry>           one entry in plaintext (careful)
+  vault get <entry> [field]    one field value (default: password)
+  vault copy <entry> [field]   copy to clipboard, never printed
+  vault search <kw>            search names/urls/usernames/notes (never secrets)
+  vault find-secret <frag>     reverse lookup: which entries use this secret
+  vault totp <entry>           current TOTP code from the stored seed
+  vault shape                  report the SHAPE of stdin (length/charset/prefix/sha256)
+                               without printing it — clipboard pre-flight check
+
+Plaintext views (smallest footprint first)
+  vault cat [entry]            plaintext to stdout (never touches disk)
+  vault view [entry]           paged in less (screen cleared on quit)
+  vault html [file]            browser card view (grouped, click-to-copy, live TOTP)
+  vault clean                  remove plaintext temp files (html/CSV/XML/keycard)
+
+Write
+  vault new <entry> [--url U] [--username X] [--password P] [--field k=v]
+              [--gen FIELD] [--no-password] [--env E] [--owner O] [--note N]
+                               create entry; password auto-generated unless given
+  vault set <entry> <field> <value|->
+                               set a field; '-' reads the value from stdin
+                               (pbpaste | vault set X appkey -  keeps it out of
+                                args, history and process listings)
+  vault rm <entry> [field]     delete entry or single field
+  vault rename <old> <new>     rename entry (verified whole-file round trip)
+  vault sort                   sort all entries by name
+  vault edit                   edit the whole vault in $EDITOR (sops edit)
+  vault import <csv> [--format auto|bitwarden|1password|chrome|generic]
+                               bulk import; existing entries skipped
+  vault md                     rebuild the auto block of systems.md
+
+Check & maintain
+  vault audit                  allowlist/leak audit (works without the key)
+  vault reencrypt              re-encrypt after changing .sops.yaml
+  vault save [msg]             git commit
+  vault log                    change history
+  vault remote <git-url>       bind a backup remote (private repo recommended)
+  vault push / vault pull      push / pull
+  vault export [file]          plaintext CSV export (delete after use)
+  vault kdbx [file]            KeePassXML export (KeePassXC / KeePassium)
+  vault backup [dir]           single-file git bundle backup (keeps last 5)
+  vault restore <bundle> [dir] restore to a NEW directory, verified
+  vault keycard [file]         printable offline age-key backup card (then vault clean)
+  vault doctor                 self-check (key, perms, decryption, git, last backup)
+  vault path / vault version   print locations / version
+
+Environment: VAULT_DIR, SECRETS_FILE, SOPS_AGE_KEY_FILE, VAULT_LANG=zh|en
+EOF
+}
+
+# 按名称排序全部条目（整文件往返重写；ls/md/面板显示顺序随之稳定）
+cmd_sort() {
+  check_key
+  local n
+  n="$(sj | jq -r '.systems // {} | length')"
+  _roundtrip_merge '.systems = ((.systems // {}) | to_entries | sort_by(.key) | from_entries)' \
+    || die "$(t err.sort_fail)"
+  cmd_md >/dev/null 2>&1 || true
+  t sort.ok "$n"
+}
+
 usage() {
   cat <<'EOF'
 vault —— 本地加密凭据库（免费 / 本地 / AI 可管理）
@@ -719,6 +862,7 @@ vault —— 本地加密凭据库（免费 / 本地 / AI 可管理）
                                 密码不进命令行参数/shell 历史/进程列表）
   vault rm   <系统> [字段]      删除整条或单个字段
   vault rename <旧名> <新名>    重命名条目（整文件往返，目标已存在则拒绝）
+  vault sort                   按名称排序全部条目
   vault edit                   整库编辑：VS Code（或 $EDITOR）里改明文 YAML，关掉标签页自动重加密
   vault md                     用非敏感字段重建 systems.md 的自动区块
 
@@ -738,7 +882,7 @@ main() {
   local cmd="${1:-help}"
   shift || true
   case "$cmd" in
-    help|-h|--help) usage; return 0 ;;
+    help|-h|--help) if [ "$VAULT_LANG" = "en" ]; then usage_en; else usage; fi; return 0 ;;
     version|-v|--version) printf 'vault %s\n' "$VAULT_VERSION"; return 0 ;;
     path)  cmd_path; return 0 ;;
     doctor) cmd_doctor; return $? ;;
@@ -769,6 +913,7 @@ main() {
     set)       cmd_set "$@" ;;
     rm|del)    cmd_rm "$@" ;;
     rename|mv) cmd_rename "$@" ;;
+    sort)      cmd_sort ;;
     edit)      check_key; cmd_edit ;;
     md)        cmd_md ;;
     save|commit) cmd_save "${1:-}" ;;
@@ -778,7 +923,7 @@ main() {
     pull)      cmd_pull ;;
     export)    check_key; cmd_export "${1:-}" ;;
     kdbx)      cmd_kdbx "${1:-}" ;;
-    *) die "未知命令: ${cmd}（运行 vault help 查看用法）" ;;
+    *) die "$(t err.unknown_cmd "$cmd")" ;;
   esac
 }
 
