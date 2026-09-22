@@ -18,6 +18,14 @@ git clone https://github.com/skyzhao1223/sops-vault-kit && cd sops-vault-kit
 vault keycard         # 立刻打印你的离线密钥备份卡
 ```
 
+## 截图
+
+`vault html` —— 零依赖浏览器视图（分组卡片、默认打码、点击复制、TOTP 实时）：
+
+![vault html 浏览器视图](docs/screenshot.png)
+
+威胁模型详见 [docs/threat-model.zh.md](docs/threat-model.zh.md)：防住什么、防不住什么、为什么这样取舍。
+
 ## 为什么又造一个库？
 
 密码管理器（KeePassXC / Bitwarden / 1Password）存的是**给人看的二进制盒子**：不能 diff、没有

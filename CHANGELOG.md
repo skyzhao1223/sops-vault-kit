@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0 — 2026-09-22
+
+### Added
+
+- `vault kdbx [file]` — export as KeePassXML 2.x for KeePassXC / KeePassium
+  (iPhone): groups from name prefixes, TOTP seeds as `otpauth://` (codes work
+  right after import), non-allowlist fields flagged ProtectInMemory. Pure
+  stdlib, zero new dependencies.
+- `docs/threat-model.zh.md` — what the kit defends, what it does not, and why.
+- README screenshot (real headless-Chrome capture of `vault html` on a demo vault).
+- Smoke suite covers kdbx export (parseable XML, entry count, TOTP present): 30 assertions.
+
 ## 0.1.1 — 2026-09-22
 
 ### Fixed
