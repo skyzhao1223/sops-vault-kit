@@ -55,7 +55,7 @@ PUB="$(age-keygen -y "$KEY_FILE")" || die "无法从密钥文件导出公钥"
 # ---- 4. 铺设库目录 ----
 mkdir -p "$VAULT_DIR/bin"
 cp "$KIT_DIR"/bin/vault "$KIT_DIR"/bin/vault-audit.py "$KIT_DIR"/bin/vault-shape.py \
-   "$KIT_DIR"/bin/vault-render.py "$KIT_DIR"/bin/vault-view.html "$VAULT_DIR/bin/"
+   "$KIT_DIR"/bin/vault-render.py "$KIT_DIR"/bin/vault-import.py "$KIT_DIR"/bin/vault-view.html "$VAULT_DIR/bin/"
 chmod +x "$VAULT_DIR/bin/vault" "$VAULT_DIR/bin/"*.py
 sed "s|__AGE_PUBLIC_KEY__|$PUB|" "$KIT_DIR/templates/sops.yaml" > "$VAULT_DIR/.sops.yaml"
 cp "$KIT_DIR/templates/secrets.yaml"  "$VAULT_DIR/secrets.yaml"

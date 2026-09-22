@@ -160,7 +160,7 @@ vault find-secret <某个 AppSecret 片段>      # 反查这个密钥用在哪�
 
 ```bash
 vault backup                        # 默认：iCloud Drive/VaultBackups，自动保留最近 5 份
-vault backup /Volumes/极空间/备份     # 或任何目录（NAS 挂载、移动硬盘）
+vault backup /Volumes/NAS挂载点/备份     # 或任何目录（NAS 挂载、移动硬盘）
 ```
 
 把整个库（含全部 git 历史）打包成单个 `.bundle` 文件。注意：bundle 里**敏感值全是密文**，但系统名、URL、备注这些按设计明文的元数据也在里面——放 iCloud 或你自己的 NAS 没问题，别放到你不信任的地方。
@@ -186,7 +186,7 @@ VAULT_DIR=~/Vault-restored-XXXX vault ls          # 4. 直接用，或 mv 成 ~/
 
 ### 进阶：git 远端（可选）
 
-偏好推私有仓库（GitHub 私有 / 极空间 Gitea / NAS 裸仓库）：
+偏好推私有仓库（GitHub 私有 / NAS 上的 Gitea / NAS 裸仓库）：
 
 ```bash
 vault remote git@github.com:你的账号/vault.git

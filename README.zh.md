@@ -2,6 +2,9 @@
 
 [English](README.md) | 中文
 
+[![CI](https://github.com/skyzhao1223/sops-vault-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/skyzhao1223/sops-vault-kit/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 本地优先、**AI 可管理**的加密凭据库：一条 `install.sh` 得到一个
 [sops](https://github.com/getsops/sops) + [age](https://age-encryption.org) + git 的库，
 带 30 个命令的 CLI、浏览器卡片视图、TOTP 动态码、安全审计、离线密钥备份卡，以及一份内置的
@@ -41,7 +44,8 @@ vault keycard         # 立刻打印你的离线密钥备份卡
 | 写入 | `vault new`（自动生成 24 位随机密码）· `set`（值写 `-` 走 **stdin**）· `rm` · `edit`（VS Code 编辑整库） |
 | TOTP | `vault totp`（RFC 6238，种子加密存储） |
 | 安全 | `audit`（白名单/泄漏检查）· `shape`（**剪贴板体检**：长度/构成/前缀/sha256 指纹，绝不输出内容）· `doctor` |
-| 生命周期 | `save`（git 提交）· `log` · `backup`（单文件 bundle，留 5 份）· `restore`（绝不覆盖，自动验证可解密）· `keycard`（可打印的离线密钥卡）· `reencrypt` · `clean` |
+| 生命周期 | `save`（git 提交）· `log` · `backup`（单文件 bundle，留 5 份）· `restore`（绝不覆盖，自动验证可解密）· `keycard`（可打印离线密钥卡，装了 `qrencode` 自动附二维码）· `reencrypt` · `clean` |
+| 迁移 | `vault import dump.csv` —— Bitwarden / 1Password / Chrome / 通用 CSV 自动识别；已存在条目跳过，密钥值走 stdin（绝不进命令参数） |
 
 ### 剪贴板协议（`shape` 存在的理由）
 
@@ -73,8 +77,11 @@ FileVault 是你的朋友）；`vault html` 会在 `/tmp` 写一个 600 权限�
 ## 依赖与平台
 
 - `sops`、`age`、`git`、`jq`、`python3`（macOS：`brew install sops age`）
-- **macOS 优先**（`pbcopy/pbpaste`、免钥匙串配置、iCloud 默认备份目录）。Linux 除剪贴板命令外
-  全部可用（装 `xclip`/`wl-clipboard` 后小改即可，欢迎 PR）。Windows 走 WSL。
+- **macOS 优先**（原生 `pbcopy/pbpaste`、iCloud 默认备份目录）。**Linux 全功能**（CI 双平台实跑）：
+  `vault copy` 自动回退 `wl-copy`/`xclip`/`xsel`；剪贴板协议里的 `pbpaste` 换成 `wl-paste` 或
+  `xclip -o` 即可。Windows 走 WSL。
+- Shell 补全：bash `source completions/vault.bash`；zsh 把 `completions/vault.zsh` 以 `_vault`
+  放进 fpath。
 
 ## 配套
 

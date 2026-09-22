@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install sops & age (pinned releases)
+        run: |
+          set -e
+          OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+          ARCH=$(uname -m)
+          case "$ARCH" in x86_64) ARCH=amd64 ;; arm64|aarch64) ARCH=arm64 ;; esac
+          curl -sL "https://github.com/getsops/sops/releases/download/v3.13.3/sops-v3.13.3.$OS.$ARCH" -o /tmp/sops
+          curl -sL "https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-$OS-$ARCH.tar.gz" -o /tmp/age.tgz
+          tar -xzf /tmp/age.tgz -C /tmp
+          sudo install -m755 /tmp/sops /usr/local/bin/sops
+          sudo install -m755 /tmp/age/age /usr/local/bin/age
+          sudo install -m755 /tmp/age/age-keygen /usr/local/bin/age-keygen
+          sops --version 2>/dev/null | head -1
+          age --version
+          command -v jq python3 git
+
+      - name: Shell syntax check
+        run: bash -n bin/vault && bash -n install.sh && bash -n tests/smoke.sh
+
+      - name: Smoke test (full lifecycle, isolated HOME)
+        run: bash tests/smoke.sh

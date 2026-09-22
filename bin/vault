@@ -9,6 +9,7 @@
 #   3. 所有写操作都改同一个 YAML 文件，改动可 git diff / git 回滚。
 set -euo pipefail
 
+VAULT_VERSION="0.1.0"
 VAULT_DIR="${VAULT_DIR:-$HOME/Vault}"
 SECRETS="${SECRETS_FILE:-$VAULT_DIR/secrets.yaml}"
 KEY_MAC="$HOME/Library/Application Support/sops/age/keys.txt"
@@ -156,7 +157,9 @@ cmd_html() {
   [ -f "$tpl" ] || die "缺少模板 $tpl"
   sj | python3 "$VAULT_DIR/bin/vault-render.py" "$tpl" "$VAULT_DIR/.sops.yaml" > "$out"
   chmod 600 "$out"
-  command -v open >/dev/null 2>&1 && open "$out"
+  if command -v open >/dev/null 2>&1; then open "$out"
+  elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$out"
+  fi
   printf '已生成明文页面并在浏览器打开：\n  %s\n' "$out"
   printf '⚠️  看完请关闭标签页，并执行： vault clean\n'
 }
@@ -241,18 +244,24 @@ cmd_rm() {
   local name="${1:?用法: vault rm <系统> [字段]}"
   local field="${2:-}"
   check_key
-  if [ -n "$field" ]; then
-    sops unset --idempotent "$SECRETS" "$(jpath "$name" "$field")" >/dev/null
-    printf '已删除 %s.%s\n' "$name" "$field"
-  else
-    sops unset --idempotent "$SECRETS" "$(jpath "$name")" >/dev/null
-    printf '已删除 %s\n' "$name"
+  local target
+  if [ -n "$field" ]; then target="$(jpath "$name" "$field")"; else target="$(jpath "$name")"; fi
+  if ! sops unset --idempotent "$SECRETS" "$target" >/dev/null 2>&1; then
+    die "删除失败（条目或字段不存在？）: $name${field:+.$field}"
   fi
+  if [ -n "$field" ]; then printf '已删除 %s.%s\n' "$name" "$field"
+  else printf '已删除 %s\n' "$name"; fi
 }
 
 cmd_copy() {
-  command -v pbcopy >/dev/null 2>&1 || die "只有 macOS 支持复制"
-  _get_raw "$1" "${2:-password}" | pbcopy
+  local copier=""
+  if   command -v pbcopy  >/dev/null 2>&1; then copier="pbcopy"
+  elif command -v wl-copy >/dev/null 2>&1; then copier="wl-copy"
+  elif command -v xclip   >/dev/null 2>&1; then copier="xclip -selection clipboard"
+  elif command -v xsel    >/dev/null 2>&1; then copier="xsel -b"
+  else die "找不到剪贴板工具（macOS: pbcopy / Wayland: wl-copy / X11: xclip 或 xsel）"
+  fi
+  _get_raw "$1" "${2:-password}" | $copier
   printf '已复制到剪贴板（未打印内容）\n'
 }
 
@@ -274,8 +283,7 @@ cmd_find_secret() {
   local kw="${1:?用法: vault find-secret <片段>}"
   sj | jq -r --arg f "$kw" '
     .systems // {} | to_entries[]
-    | select(([ (.value.password//""), (.value.token//""), (.value.totp//"") ] | join(" "))
-             | test($f; "i"))
+    | select([ .value | to_entries[] | select(.value | type == "string") | .value ] | join(" ") | test($f; "i"))
     | .key'
 }
 
@@ -350,7 +358,7 @@ cmd_reencrypt() {
   check_key
   local tmp before after
   before="$(sj | jq -r '.systems // {} | length')"
-  tmp="$(mktemp -t vault-reencrypt)"
+  tmp="$(mktemp "${TMPDIR:-/tmp}/vault-reencrypt.XXXXXX")"
   if ! sops decrypt --input-type yaml --output-type yaml "$SECRETS" \
        | sops encrypt --input-type yaml --output-type yaml --filename-override "$SECRETS" /dev/stdin > "$tmp"; then
     rm -f "$tmp"; die "重新加密失败，原文件未改动"
@@ -386,7 +394,7 @@ cmd_backup() {
   fi
   mv "$tmp" "$dest/$name"; rm -rf "$tmpd"
   git -C "$VAULT_DIR" bundle verify "$dest/$name" >/dev/null 2>&1 || die "备份文件校验失败: $dest/$name"
-  ls -1t "$dest"/vault-*.bundle 2>/dev/null | tail -n +6 | while read -r f; do rm -f "$f"; done
+  { ls -1t "$dest"/vault-*.bundle 2>/dev/null | tail -n +6 | while read -r f; do rm -f "$f"; done; } || true
   printf '✓ 已备份: %s\n' "$dest/$name"
   printf '  大小 %s，含全部 git 历史（%s 次提交）\n' "$(du -h "$dest/$name" | cut -f1)" "$(git -C "$VAULT_DIR" rev-list --count HEAD)"
   printf '  恢复: vault restore "%s"\n' "$dest/$name"
@@ -425,6 +433,14 @@ cmd_keycard() {
   sec="$(grep -o 'AGE-SECRET-KEY-[A-Z0-9]*' "$SOPS_AGE_KEY_FILE" | head -1)"
   [ -n "$sec" ] || die "密钥文件里没找到 age 私钥"
   keydir="$(dirname "$SOPS_AGE_KEY_FILE")"
+  local qr_html=""
+  if command -v qrencode >/dev/null 2>&1; then
+    local qr_b64
+    qr_b64="$(qrencode -o - -t PNG "$sec" 2>/dev/null | base64 | tr -d '\n' || true)"
+    if [ -n "$qr_b64" ]; then
+      qr_html="<p><b>私钥二维码</b>（扫码录入，避免手抄错）：</p><img style=\"width:230px;height:230px;image-rendering:pixelated\" src=\"data:image/png;base64,$qr_b64\" alt=\"age key QR\">"
+    fi
+  fi
   cat > "$out" <<HTML
 <!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>Vault 主密钥备份卡</title>
@@ -443,6 +459,7 @@ ol li{margin:6px 0} .sign{margin-top:24px;font-size:13px;color:#555} code{backgr
 <div class="card">
 <p><b>私钥</b>（恢复用，绝不外传）：</p>
 <div class="key">${sec}</div>
+${qr_html}
 <p><b>公钥</b>（核对密钥用，可公开）：</p>
 <div class="pub">${pub}</div>
 <p class="sign">生成时间：$(date '+%Y-%m-%d %H:%M') · 机器：$(hostname -s) · 库位置：~/Vault/secrets.yaml</p>
@@ -457,7 +474,9 @@ ol li{margin:6px 0} .sign{margin-top:24px;font-size:13px;color:#555} code{backgr
 </body></html>
 HTML
   chmod 600 "$out"
-  command -v open >/dev/null 2>&1 && open "$out"
+  if command -v open >/dev/null 2>&1; then open "$out"
+  elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$out"
+  fi
   printf '密钥备份卡已生成并在浏览器打开：\n  %s\n' "$out"
   printf '⚠️  卡片含明文私钥：打印 2 份异地保存后，执行 vault clean 删除\n'
 }
@@ -518,7 +537,7 @@ cmd_doctor() {
   printf '%-14s %s\n' "python3" "$(command -v python3 || echo '缺失（仅 totp 命令受影响）')"
   if [ -f "${SOPS_AGE_KEY_FILE:-/nonexistent}" ]; then
     printf '%-14s %s\n' "age 密钥" "$SOPS_AGE_KEY_FILE"
-    local perm; perm="$(stat -f '%Lp' "$SOPS_AGE_KEY_FILE")"
+    local perm; perm="$(stat -f '%Lp' "$SOPS_AGE_KEY_FILE" 2>/dev/null || stat -c '%a' "$SOPS_AGE_KEY_FILE" 2>/dev/null || echo '?')"
     if [ "$perm" = "600" ]; then printf '%-14s %s\n' "密钥权限" "600 ✓"
     else printf '%-14s %s\n' "密钥权限" "$perm ⚠️ 建议 chmod 600"; fi
   else
@@ -538,13 +557,51 @@ cmd_doctor() {
   local bdir="$HOME/Library/Mobile Documents/com~apple~CloudDocs/VaultBackups"
   [ -d "$bdir" ] || bdir="$HOME/VaultBackups"
   local latest
-  latest="$(ls -1t "$bdir"/vault-*.bundle 2>/dev/null | head -1)"
+  latest="$(ls -1t "$bdir"/vault-*.bundle 2>/dev/null | head -1 || true)"
   if [ -n "$latest" ]; then
     printf '%-14s %s\n' "最近备份" "$(basename "$latest")"
   else
     printf '%-14s %s\n' "最近备份" "无 ⚠️ → vault backup"
   fi
   return $ok
+}
+
+# 从 CSV 导入（Bitwarden / 1Password / Chrome / 通用 / 本库 export 的格式均可）。
+# 已存在的同名条目默认跳过（绝不覆盖）；密码值经 stdin 写入，不进进程参数。
+cmd_import() {
+  local csv="${1:?用法: vault import <csv 文件> [--format auto|bitwarden|1password|chrome|generic]}"
+  local fmt="auto"
+  if [ "${2:-}" = "--format" ]; then fmt="${3:-auto}"; fi
+  [ -f "$csv" ] || die "找不到 CSV: $csv"
+  check_key
+  local jsonl; jsonl="$(mktemp "${TMPDIR:-/tmp}/vault-import.XXXXXX")"
+  if ! python3 "$VAULT_DIR/bin/vault-import.py" "$csv" "$fmt" > "$jsonl"; then
+    rm -f "$jsonl"; die "CSV 解析失败（检查编码/表头，或用 --format 显式指定）"
+  fi
+  local n=0 skipped=0 line name url user pass totp note
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    name="$(printf '%s' "$line" | jq -r '.name // ""')"
+    if [ -z "$name" ]; then skipped=$((skipped+1)); continue; fi
+    if cmd_peek | grep -Fxq "$name"; then skipped=$((skipped+1)); continue; fi
+    url="$(printf '%s' "$line" | jq -r '.url // ""')"
+    user="$(printf '%s' "$line" | jq -r '.username // ""')"
+    pass="$(printf '%s' "$line" | jq -r '.password // ""')"
+    totp="$(printf '%s' "$line" | jq -r '.totp // ""')"
+    note="$(printf '%s' "$line" | jq -r '.note // ""')"
+    local args=("$name" --no-password)
+    if [ -n "$url" ];  then args+=(--url "$url"); fi
+    if [ -n "$user" ]; then args+=(--username "$user"); fi
+    if [ -n "$note" ]; then args+=(--note "$note"); fi
+    cmd_new "${args[@]}" >/dev/null
+    if [ -n "$pass" ]; then printf '%s' "$pass" | cmd_set "$name" password - >/dev/null; fi
+    if [ -n "$totp" ]; then printf '%s' "$totp" | cmd_set "$name" totp - >/dev/null; fi
+    n=$((n+1))
+  done < "$jsonl"
+  rm -f "$jsonl"
+  cmd_md >/dev/null 2>&1 || true
+  printf '✓ 导入 %d 条，跳过 %d 条（已存在或无名）\n' "$n" "$skipped"
+  printf '⚠️  源 CSV 是明文，用完立即删除：rm -P "%s"（macOS）或 shred -u\n' "$csv"
 }
 
 usage() {
@@ -555,6 +612,9 @@ vault —— 本地加密凭据库（免费 / 本地 / AI 可管理）
   vault ls [关键词]            列出所有系统（系统名 / 环境 / 负责人 / 入口）
   vault peek                   不解密，直接列出系统名
   vault meta                   全库 JSON 元数据（不解密；明文元数据带值，密钥字段只标 enc）
+  vault import <csv> [--format auto|bitwarden|1password|chrome|generic]
+                               从 CSV 批量导入（已存在的条目跳过不覆盖）
+  vault version                打印版本
   vault shape                  只报告 stdin 内容的形状（长度/行数/构成/前缀/哈希），不输出内容；
                                入库前体检剪贴板：pbpaste | vault shape
   vault show <系统>            显示整条记录（含明文密码，谨慎）
@@ -604,6 +664,7 @@ main() {
   shift || true
   case "$cmd" in
     help|-h|--help) usage; return 0 ;;
+    version|-v|--version) printf 'vault %s\n' "$VAULT_VERSION"; return 0 ;;
     path)  cmd_path; return 0 ;;
     doctor) cmd_doctor; return $? ;;
   esac
@@ -611,6 +672,7 @@ main() {
   case "$cmd" in
     ls|list)   cmd_ls "${1:-}" ;;
     meta)      cmd_meta ;;
+    import)    cmd_import "$@" ;;
     shape)     cmd_shape ;;
     peek)      cmd_peek ;;
     show)      cmd_show "$@" ;;

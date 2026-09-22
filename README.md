@@ -2,6 +2,9 @@
 
 English | [中文](README.zh.md)
 
+[![CI](https://github.com/skyzhao1223/sops-vault-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/skyzhao1223/sops-vault-kit/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A local-first, **AI-manageable** encrypted credential vault: one `install.sh` gives you a
 [sops](https://github.com/getsops/sops) + [age](https://age-encryption.org) + git vault with a 30-command
 CLI, a browser card view, TOTP, security audit, offline key backup cards, and a built-in `AGENTS.md`
@@ -45,7 +48,8 @@ This kit sits in between, built for how people actually work with coding agents 
 | Write | `vault new` (auto-generated 24-char password) · `set` (accepts `-` for **stdin**) · `rm` · `edit` (VS Code via `sops edit`) |
 | TOTP | `vault totp` (RFC 6238, seeds stored encrypted) |
 | Safety | `audit` (allowlist/leak checks) · `shape` (**clipboard pre-flight**: length/charset/prefix/sha256 fingerprint, never the content) · `doctor` |
-| Lifecycle | `save` (git commit) · `log` · `backup` (single-file bundle, keeps 5) · `restore` (never overwrites, verifies decryptability) · `keycard` (printable offline key card) · `reencrypt` · `clean` |
+| Lifecycle | `save` (git commit) · `log` · `backup` (single-file bundle, keeps 5) · `restore` (never overwrites, verifies decryptability) · `keycard` (printable offline key card, QR if `qrencode` present) · `reencrypt` · `clean` |
+| Migrate | `vault import dump.csv` — Bitwarden / 1Password / Chrome / generic CSV, auto-detected; existing entries skipped, secrets piped via stdin (never in process args) |
 
 ### The clipboard protocol (why `shape` exists)
 
@@ -78,9 +82,11 @@ to `/tmp` until `vault clean`.
 ## Requirements & platforms
 
 - `sops`, `age`, `git`, `jq`, `python3` (macOS: `brew install sops age`)
-- **macOS first** (`pbcopy`/`pbpaste`, keychain-free key path, iCloud backup default). Linux works
-  for everything except the clipboard commands (bring `xclip`/`wl-clipboard` and a small patch —
-  PRs welcome). Windows via WSL.
+- **macOS first** (native `pbcopy`/`pbpaste`, iCloud backup default). **Linux is fully supported**
+  by CI: `vault copy` falls back to `wl-copy`/`xclip`/`xsel`; the clipboard protocol examples use
+  `pbpaste` — substitute `wl-paste` or `xclip -o` there. Windows via WSL.
+- Shell completions: `source completions/vault.bash` (bash) or put `completions/vault.zsh` on your
+  zsh `fpath` as `_vault`.
 
 ## Companion
 
