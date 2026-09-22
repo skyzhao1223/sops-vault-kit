@@ -9,7 +9,7 @@
 #   3. 所有写操作都改同一个 YAML 文件，改动可 git diff / git 回滚。
 set -euo pipefail
 
-VAULT_VERSION="0.1.0"
+VAULT_VERSION="0.1.1"
 VAULT_DIR="${VAULT_DIR:-$HOME/Vault}"
 SECRETS="${SECRETS_FILE:-$VAULT_DIR/secrets.yaml}"
 KEY_MAC="$HOME/Library/Application Support/sops/age/keys.txt"
@@ -174,6 +174,22 @@ cmd_clean() {
   printf '已清理 %d 个明文临时文件\n' "$n"
 }
 
+# 整文件往返：解密 → jq 合并 → 重新加密（明文只经管道与 600 权限临时文件，校验通过才替换）。
+# 用途：sops set 的路径导航在个别平台/文件形态下失败（如 Linux 上 systems 为空映射）时的兜底。
+_roundtrip_merge() {
+  local filter="$1"; shift
+  local tmp; tmp="$(mktemp "${TMPDIR:-/tmp}/vault-rt.XXXXXX")"; chmod 600 "$tmp"
+  if sops decrypt --input-type yaml --output-type json "$SECRETS" 2>/dev/null \
+     | jq "$@" "$filter" \
+     | sops encrypt --input-type json --output-type yaml --filename-override "$SECRETS" /dev/stdin > "$tmp" \
+     && sops decrypt --input-type yaml --output-type json "$tmp" >/dev/null 2>&1; then
+    mv "$tmp" "$SECRETS"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
 cmd_set() {
   local name="${1:?用法: vault set <系统> <字段> <值|->}"
   local field="${2:?缺少字段名}"
@@ -186,7 +202,11 @@ cmd_set() {
     [ -n "$value" ] || die "stdin 为空，拒绝写入空值"
   fi
   check_key
-  sops set --idempotent "$SECRETS" "$(jpath "$name" "$field")" "$(jstr "$value")"
+  if ! sops set --idempotent "$SECRETS" "$(jpath "$name" "$field")" "$(jstr "$value")" >/dev/null 2>&1; then
+    _roundtrip_merge '.systems = (.systems // {}) | .systems[$n] = ((.systems[$n] // {}) + {($f): $v})' \
+      --arg n "$name" --arg f "$field" --arg v "$value" \
+      || die "设置失败: $name.$field（sops set 与整文件重建均失败）"
+  fi
   printf '已设置 %s.%s\n' "$name" "$field"
 }
 
@@ -195,6 +215,7 @@ cmd_new() {
   shift
   local url="" username="" password="" env="" owner="" note="" pw_given=0 no_pw=0
   local kv fk fv
+  local ex_keys=() ex_vals=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --url)      url="${2-}";      shift 2 ;;
@@ -206,14 +227,12 @@ cmd_new() {
       --field)
         kv="${2-}"; fk="${kv%%=*}"; fv="${kv#*=}"
         [ "$fk" != "$kv" ] || die "--field 需要 k=v 形式，例如 --field appkey=abc123"
-        check_key
-        sops set --idempotent "$SECRETS" "$(jpath "$name" "$fk")" "$(jstr "$fv")"
+        ex_keys+=("$fk"); ex_vals+=("$fv")
         shift 2 ;;
       --gen)
         fk="${2-}"
         [ -n "$fk" ] || die "--gen 需要字段名，例如 --gen appsecret"
-        check_key
-        sops set --idempotent "$SECRETS" "$(jpath "$name" "$fk")" "$(jstr "$(genpw)")"
+        ex_keys+=("$fk"); ex_vals+=("$(genpw)")
         shift 2 ;;
       --no-password) no_pw=1; shift ;;
       *) die "未知参数: $1" ;;
@@ -222,17 +241,39 @@ cmd_new() {
   if [ "$pw_given" -eq 0 ] && [ "$no_pw" -eq 0 ]; then password="$(genpw)"; fi
 
   check_key
-  local p
-  p="$(jpath "$name" url)";      sops set --idempotent "$SECRETS" "$p" "$(jstr "$url")"
-  p="$(jpath "$name" username)"; sops set --idempotent "$SECRETS" "$p" "$(jstr "$username")"
-  if [ "$no_pw" -eq 0 ]; then
-    p="$(jpath "$name" password)"; sops set --idempotent "$SECRETS" "$p" "$(jstr "$password")"
+  local k v fail=0 i
+  for k in url username password totp token env owner note; do
+    case "$k" in
+      url)      v="$url" ;;
+      username) v="$username" ;;
+      password) if [ "$no_pw" -eq 1 ]; then continue; fi; v="$password" ;;
+      totp)     v="" ;;
+      token)    v="" ;;
+      env)      v="$env" ;;
+      owner)    v="$owner" ;;
+      note)     v="$note" ;;
+    esac
+    sops set --idempotent "$SECRETS" "$(jpath "$name" "$k")" "$(jstr "$v")" >/dev/null 2>&1 || { fail=1; break; }
+  done
+  if [ "$fail" -eq 1 ]; then
+    # 兜底：整文件往返，一次性建出整条记录
+    _roundtrip_merge '
+      .systems = (.systems // {})
+      | .systems[$n] = ({url:$url, username:$u, env:$e, owner:$o, note:$note, totp:"", token:""}
+                        + (if $p == "" then {} else {password:$p} end))
+    ' --arg n "$name" --arg url "$url" --arg u "$username" \
+      --arg p "$( [ "$no_pw" -eq 1 ] && printf '' || printf '%s' "$password" )" \
+      --arg e "$env" --arg o "$owner" --arg note "$note" \
+      || die "创建失败: $name（sops set 与整文件重建均失败）"
   fi
-  p="$(jpath "$name" totp)";     sops set --idempotent "$SECRETS" "$p" "$(jstr "")"
-  p="$(jpath "$name" token)";    sops set --idempotent "$SECRETS" "$p" "$(jstr "")"
-  p="$(jpath "$name" env)";      sops set --idempotent "$SECRETS" "$p" "$(jstr "$env")"
-  p="$(jpath "$name" owner)";    sops set --idempotent "$SECRETS" "$p" "$(jstr "$owner")"
-  p="$(jpath "$name" note)";     sops set --idempotent "$SECRETS" "$p" "$(jstr "$note")"
+  # 追加自定义字段（--field/--gen），同样带兜底
+  for i in ${ex_keys+"${!ex_keys[@]}"}; do
+    if ! sops set --idempotent "$SECRETS" "$(jpath "$name" "${ex_keys[$i]}")" "$(jstr "${ex_vals[$i]}")" >/dev/null 2>&1; then
+      _roundtrip_merge '.systems = (.systems // {}) | .systems[$n] = ((.systems[$n] // {}) + {($f): $v})' \
+        --arg n "$name" --arg f "${ex_keys[$i]}" --arg v "${ex_vals[$i]}" \
+        || die "字段设置失败: ${ex_keys[$i]}"
+    fi
+  done
 
   printf '已创建 %s' "$name"
   if [ "$no_pw" -eq 0 ] && [ "$pw_given" -eq 0 ]; then

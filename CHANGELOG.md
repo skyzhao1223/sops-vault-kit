@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.1 — 2026-09-22
+
+### Fixed
+
+- `sops set` cannot navigate an empty `systems: {}` map on Linux (works on macOS):
+  `vault new` / `vault set` now fall back to a whole-file round trip
+  (decrypt → jq merge → re-encrypt → verify → atomic replace) when path
+  navigation fails. Caught by the Ubuntu CI leg.
+- bash 3.2 (stock macOS `/bin/bash`) parsed `$KEY_FILE（` as one multibyte variable
+  name → `unbound variable` on macOS CI runners. All variables immediately followed
+  by fullwidth characters are now braced.
+- Smoke suite now surfaces failing command output and an env banner (platform,
+  bash and sops versions) instead of swallowing them.
+
 ## 0.1.0 — 2026-09-22
 
 First public release.
