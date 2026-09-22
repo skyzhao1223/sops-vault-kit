@@ -1,0 +1,646 @@
+#!/usr/bin/env bash
+# vault —— 本地加密凭据库的统一入口（人和 AI 共用同一套命令）
+#
+# 设计要点：
+#   1. 解密只依赖 ~/Library/Application Support/sops/age/keys.txt（600 权限），
+#      任何密码都不需要出现在命令行、环境变量或对话里。
+#   2. 密码类字段被 sops 加密，url/username/note/env/owner 保持明文，
+#      所以 `vault ls` / `vault peek` 能在不解密任何密码的前提下给出全貌。
+#   3. 所有写操作都改同一个 YAML 文件，改动可 git diff / git 回滚。
+set -euo pipefail
+
+VAULT_DIR="${VAULT_DIR:-$HOME/Vault}"
+SECRETS="${SECRETS_FILE:-$VAULT_DIR/secrets.yaml}"
+KEY_MAC="$HOME/Library/Application Support/sops/age/keys.txt"
+KEY_XDG="$HOME/.config/sops/age/keys.txt"
+
+# ---- 密钥定位：优先用户显式指定，其次 macOS 默认路径，再次 XDG 路径 ----
+if [ -z "${SOPS_AGE_KEY_FILE:-}" ]; then
+  if   [ -f "$KEY_MAC" ]; then export SOPS_AGE_KEY_FILE="$KEY_MAC"
+  elif [ -f "$KEY_XDG" ]; then export SOPS_AGE_KEY_FILE="$KEY_XDG"
+  fi
+fi
+
+die() { printf 'vault: %s\n' "$*" >&2; exit 1; }
+
+check() {
+  command -v sops >/dev/null 2>&1 || die "缺少 sops：brew install sops"
+  command -v jq   >/dev/null 2>&1 || die "缺少 jq：brew install jq"
+  [ -f "$SECRETS" ] || die "找不到 $SECRETS"
+}
+
+check_key() {
+  [ -n "${SOPS_AGE_KEY_FILE:-}" ] && [ -f "${SOPS_AGE_KEY_FILE:-}" ] \
+    || die "找不到 age 密钥。期望位置：$KEY_MAC"
+}
+
+# sops 路径语法：每级各自一个方括号，例如 ["systems"]["工作/VPN"]["password"]
+# 注意不能写成 JSON 数组 ["systems","工作/VPN","password"]，那会被当成一个畸形键名。
+jpath() {
+  local out="" a q
+  for a in systems "$@"; do
+    q="$(jq -Rn --arg v "$a" '$v')"
+    out+="[${q}]"
+  done
+  printf '%s' "$out"
+}
+
+# 把任意字符串编码成 JSON 字符串字面量（安全传给 sops set）
+jstr() { jq -Rn --arg v "$1" '$v'; }
+
+# 全量解密为 JSON（只在本机管道内流转，不落盘）
+sj() { sops decrypt --output-type json "$SECRETS"; }
+
+genpw() {
+  LC_ALL=C openssl rand -base64 64 | LC_ALL=C tr -dc 'A-Za-z0-9!@#%^_+=-' | cut -c1-24
+}
+
+cmd_ls() {
+  local f="${1:-}"
+  sj | jq -r --arg f "$f" '
+    def d: if (. // "") == "" then "-" else . end;
+    .systems // {} | to_entries[]
+    | select($f == "" or (.key | test($f; "i")))
+    | [ .key, (.value.env|d), (.value.owner|d), (.value.url|d) ]
+    | @tsv'
+}
+
+# 输出全库 JSON 元数据：明文元数据带值，加密字段只标记 enc:true（不解密，无需密钥）。
+# 供 UI 面板与 AI 读取结构；单值明文走 `vault get`。
+cmd_meta() {
+  python3 - "$SECRETS" <<'PYEOF'
+import json, pathlib, re, sys
+rows = {}
+entry = None
+for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
+    if re.match(r'^sops:\s*$', line):
+        break
+    m = re.match(r'^ {4}([^\s#][^:]*):\s*$', line)
+    if m:
+        entry = m.group(1).strip(); rows[entry] = {}; continue
+    m = re.match(r'^ {8}([^\s#-][^:]*):\s?(.*)$', line)
+    if m and entry is not None:
+        k = m.group(1).strip(); v = m.group(2).strip()
+        if v.startswith('ENC['):
+            rows[entry][k] = {'enc': True}
+        elif v in ('', '""', "''"):
+            rows[entry][k] = {'enc': False, 'value': ''}
+        else:
+            rows[entry][k] = {'enc': False, 'value': v.strip('"').strip("'")}
+print(json.dumps(rows, ensure_ascii=False))
+PYEOF
+}
+
+# 不解密任何内容，直接从加密文件里读出系统名（纯文本解析，无需密钥）
+cmd_peek() {
+  awk '
+    /^systems:[[:space:]]*$/ { insys = 1; next }
+    /^[^[:space:]]/          { insys = 0 }
+    insys && /^    [^[:space:]]/ {
+      line = $0
+      sub(/^    /, "", line)
+      sub(/:.*$/, "", line)
+      print line
+    }' "$SECRETS"
+}
+
+_get_raw() {
+  local name="${1:?用法: vault get <系统> [字段]}"
+  local field="${2:-password}"
+  sops decrypt --extract "$(jpath "$name" "$field")" "$SECRETS"
+}
+
+cmd_get()  { _get_raw "$@"; echo; }
+
+cmd_show() {
+  local name="${1:?用法: vault show <系统>}"
+  sops decrypt --extract "$(jpath "$name")" "$SECRETS"
+}
+
+# 只报告 stdin 内容的"形状"，绝不输出内容本身（实现在 bin/vault-shape.py）。
+# 用途：pbpaste | vault shape —— 入库前体检剪贴板
+cmd_shape() {
+  python3 "$VAULT_DIR/bin/vault-shape.py"
+}
+
+# ---- 明文查看的三个层次（残留面从小到大）----
+
+# ① 明文打到标准输出：不落盘，可直接管给 grep/less/其他命令
+cmd_cat() {
+  local name="${1:-}"
+  check_key
+  if [ -n "$name" ]; then
+    sops decrypt --extract "$(jpath "$name")" "$SECRETS"
+  else
+    sops decrypt --output-type yaml "$SECRETS" | awk '/^sops:/{exit} {print}'
+  fi
+}
+
+# ② 分页器里看：退出后内容从屏幕消失，不留回滚缓冲
+cmd_view() {
+  local name="${1:-}"
+  check_key
+  printf '\033[33m⚠️  下面是明文。按 q 退出（退出后内容会从屏幕清除）。\033[0m\n' >&2
+  if [ -n "$name" ]; then
+    cmd_cat "$name"
+  else
+    cmd_cat | less -R
+  fi
+}
+
+# ③ 浏览器卡片视图：分组、全字段、TOTP 实时；会写一个 600 权限的明文临时文件
+cmd_html() {
+  local tpl="$VAULT_DIR/bin/vault-view.html"
+  local out="${1:-/tmp/vault-view-$(date +%Y%m%d-%H%M%S).html}"
+  check_key
+  [ -f "$tpl" ] || die "缺少模板 $tpl"
+  sj | python3 "$VAULT_DIR/bin/vault-render.py" "$tpl" "$VAULT_DIR/.sops.yaml" > "$out"
+  chmod 600 "$out"
+  command -v open >/dev/null 2>&1 && open "$out"
+  printf '已生成明文页面并在浏览器打开：\n  %s\n' "$out"
+  printf '⚠️  看完请关闭标签页，并执行： vault clean\n'
+}
+
+# 清理所有明文的临时文件（html 视图 / 导出的 CSV）
+cmd_clean() {
+  local n=0 f
+  for f in /tmp/vault-view-*.html /tmp/vault-export-*.csv /tmp/vault-keycard-*.html; do
+    [ -e "$f" ] || continue
+    rm -f "$f"; n=$((n + 1))
+  done
+  printf '已清理 %d 个明文临时文件\n' "$n"
+}
+
+cmd_set() {
+  local name="${1:?用法: vault set <系统> <字段> <值|->}"
+  local field="${2:?缺少字段名}"
+  local value="${3-}"
+  # 值为 "-" 时从 stdin 读取（尾部换行自动剥掉）：
+  #   pbpaste | vault set "服务/X" appkey -
+  # 用途：让密码值不经过命令行参数、shell 历史和任何日志（进程列表可见参数！）
+  if [ "$value" = "-" ]; then
+    value="$(cat)"
+    [ -n "$value" ] || die "stdin 为空，拒绝写入空值"
+  fi
+  check_key
+  sops set --idempotent "$SECRETS" "$(jpath "$name" "$field")" "$(jstr "$value")"
+  printf '已设置 %s.%s\n' "$name" "$field"
+}
+
+cmd_new() {
+  local name="${1:?用法: vault new <系统> [--url U] [--username X] [--password P] [--field k=v] [--gen 字段] [--no-password] [--env E] [--owner O] [--note N]}"
+  shift
+  local url="" username="" password="" env="" owner="" note="" pw_given=0 no_pw=0
+  local kv fk fv
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --url)      url="${2-}";      shift 2 ;;
+      --username) username="${2-}"; shift 2 ;;
+      --password) password="${2-}"; pw_given=1; shift 2 ;;
+      --env)      env="${2-}";      shift 2 ;;
+      --owner)    owner="${2-}";    shift 2 ;;
+      --note)     note="${2-}";     shift 2 ;;
+      --field)
+        kv="${2-}"; fk="${kv%%=*}"; fv="${kv#*=}"
+        [ "$fk" != "$kv" ] || die "--field 需要 k=v 形式，例如 --field appkey=abc123"
+        check_key
+        sops set --idempotent "$SECRETS" "$(jpath "$name" "$fk")" "$(jstr "$fv")"
+        shift 2 ;;
+      --gen)
+        fk="${2-}"
+        [ -n "$fk" ] || die "--gen 需要字段名，例如 --gen appsecret"
+        check_key
+        sops set --idempotent "$SECRETS" "$(jpath "$name" "$fk")" "$(jstr "$(genpw)")"
+        shift 2 ;;
+      --no-password) no_pw=1; shift ;;
+      *) die "未知参数: $1" ;;
+    esac
+  done
+  if [ "$pw_given" -eq 0 ] && [ "$no_pw" -eq 0 ]; then password="$(genpw)"; fi
+
+  check_key
+  local p
+  p="$(jpath "$name" url)";      sops set --idempotent "$SECRETS" "$p" "$(jstr "$url")"
+  p="$(jpath "$name" username)"; sops set --idempotent "$SECRETS" "$p" "$(jstr "$username")"
+  if [ "$no_pw" -eq 0 ]; then
+    p="$(jpath "$name" password)"; sops set --idempotent "$SECRETS" "$p" "$(jstr "$password")"
+  fi
+  p="$(jpath "$name" totp)";     sops set --idempotent "$SECRETS" "$p" "$(jstr "")"
+  p="$(jpath "$name" token)";    sops set --idempotent "$SECRETS" "$p" "$(jstr "")"
+  p="$(jpath "$name" env)";      sops set --idempotent "$SECRETS" "$p" "$(jstr "$env")"
+  p="$(jpath "$name" owner)";    sops set --idempotent "$SECRETS" "$p" "$(jstr "$owner")"
+  p="$(jpath "$name" note)";     sops set --idempotent "$SECRETS" "$p" "$(jstr "$note")"
+
+  printf '已创建 %s' "$name"
+  if [ "$no_pw" -eq 0 ] && [ "$pw_given" -eq 0 ]; then
+    printf '（已生成 24 位随机密码，未打印；用 vault copy "%s" 取到剪贴板）' "$name"
+  fi
+  printf '\n'
+}
+cmd_rm() {
+  local name="${1:?用法: vault rm <系统> [字段]}"
+  local field="${2:-}"
+  check_key
+  if [ -n "$field" ]; then
+    sops unset --idempotent "$SECRETS" "$(jpath "$name" "$field")" >/dev/null
+    printf '已删除 %s.%s\n' "$name" "$field"
+  else
+    sops unset --idempotent "$SECRETS" "$(jpath "$name")" >/dev/null
+    printf '已删除 %s\n' "$name"
+  fi
+}
+
+cmd_copy() {
+  command -v pbcopy >/dev/null 2>&1 || die "只有 macOS 支持复制"
+  _get_raw "$1" "${2:-password}" | pbcopy
+  printf '已复制到剪贴板（未打印内容）\n'
+}
+
+# 只在非敏感字段里搜索：系统名 / url / username / note / env / owner
+cmd_search() {
+  local kw="${1:?用法: vault search <关键词>}"
+  sj | jq -r --arg f "$kw" '
+    def d: if (. // "") == "" then "-" else . end;
+    .systems // {} | to_entries[]
+    | select(([ .key, (.value.url//""), (.value.username//""),
+               (.value.note//""), (.value.env//""), (.value.owner//"") ] | join(" "))
+             | test($f; "i"))
+    | [ .key, (.value.username|d), (.value.url|d), (.value.note|d) ]
+    | @tsv'
+}
+
+# 反向查询：某个密码/令牌用在了哪个系统（只输出系统名，不输出密文）
+cmd_find_secret() {
+  local kw="${1:?用法: vault find-secret <片段>}"
+  sj | jq -r --arg f "$kw" '
+    .systems // {} | to_entries[]
+    | select(([ (.value.password//""), (.value.token//""), (.value.totp//"") ] | join(" "))
+             | test($f; "i"))
+    | .key'
+}
+
+cmd_totp() {
+  local name="${1:?用法: vault totp <系统>}"
+  local seed
+  seed="$(_get_raw "$name" totp)"
+  [ -n "$seed" ] || die "$name 里没有存 totp 种子"
+  python3 - "$seed" <<'PY'
+import sys, base64, hmac, hashlib, struct, time
+s = sys.argv[1].strip().replace(" ", "").replace("-", "").upper()
+try:
+    key = base64.b32decode(s + "=" * (-len(s) % 8))
+except Exception as e:
+    sys.exit(f"totp: 种子不是合法 base32: {e}")
+step = 30
+c = int(time.time()) // step
+h = hmac.new(key, struct.pack(">Q", c), hashlib.sha1).digest()
+o = h[-1] & 0x0F
+code = (struct.unpack(">I", h[o:o+4])[0] & 0x7FFFFFFF) % 1000000
+print(f"{code:06d}   剩余 {step - int(time.time()) % step}s")
+PY
+}
+
+# 导出明文 CSV（给手机端密码管理器导入用）。默认写到 600 权限的临时文件。
+cmd_export() {
+  local out="${1:-/tmp/vault-export-$(date +%Y%m%d-%H%M%S).csv}"
+  sj | jq -r '
+    .systems // {} | to_entries[]
+    | [ .key, (.value.url//""), (.value.username//""), (.value.password//""),
+        ((.value.note//"") | gsub("[\r\n]+"; " ")) ]
+    | @csv' > "$out"
+  chmod 600 "$out"
+  printf '已导出明文 CSV: %s\n' "$out"
+  printf '⚠️  这是明文文件：导入完成后请立刻 rm 掉，且不要提交到 git。\n'
+}
+
+# 用非敏感字段重新生成 systems.md 里的自动区块
+cmd_md() {
+  local md="$VAULT_DIR/systems.md" tmp rowsf
+  [ -f "$md" ] || die "找不到 $md"
+  rowsf="$(mktemp)"; tmp="$(mktemp)"
+  sj | jq -r '
+    def d: if (. // "") == "" then "-" else . end;
+    (.systems // {} | to_entries | sort_by(.key))[]
+    | [ .key, (.value.url|d), (.value.env|d), (.value.owner|d), (.value.note|d) ]
+    | @tsv' | awk -F'\t' '{printf "| %s | %s | %s | %s | %s |\n", $1, $2, $3, $4, $5}' > "$rowsf"
+  awk -v rf="$rowsf" '
+    /<!-- BEGIN AUTO -->/ {
+      print
+      print "| 系统 | 入口地址 | 环境 | 负责人 | 备注 |"
+      print "|---|---|---|---|---|"
+      while ((getline line < rf) > 0) print line
+      close(rf)
+      skip = 1; next
+    }
+    /<!-- END AUTO -->/ { skip = 0 }
+    !skip               { print }' "$md" > "$tmp"
+  mv "$tmp" "$md"; rm -f "$rowsf"
+  printf '已更新 %s 的自动区块（仅非敏感字段）\n' "$md"
+}
+
+# 检查加密后的文件：确认敏感字段真的没有以明文存在（不需要 age 密钥）
+cmd_audit() {
+  python3 "$VAULT_DIR/bin/vault-audit.py" "$VAULT_DIR/.sops.yaml" "$SECRETS"
+}
+
+# 按当前 .sops.yaml 重新加密整个库。
+# 注意：sops updatekeys 不会重新应用改过的 encrypted_regex，必须走这条路。
+# 明文全程只在管道里流转，不落盘；校验通过后才替换原文件。
+cmd_reencrypt() {
+  check_key
+  local tmp before after
+  before="$(sj | jq -r '.systems // {} | length')"
+  tmp="$(mktemp -t vault-reencrypt)"
+  if ! sops decrypt --input-type yaml --output-type yaml "$SECRETS" \
+       | sops encrypt --input-type yaml --output-type yaml --filename-override "$SECRETS" /dev/stdin > "$tmp"; then
+    rm -f "$tmp"; die "重新加密失败，原文件未改动"
+  fi
+  after="$(sops decrypt --input-type yaml --output-type json "$tmp" 2>/dev/null | jq -r '.systems // {} | length')"
+  if [ "$after" != "$before" ]; then
+    rm -f "$tmp"; die "校验失败：条目数 $before → ${after:-?}，原文件未改动"
+  fi
+  chmod 600 "$tmp"; mv "$tmp" "$SECRETS"
+  printf '已按当前规则重新加密：%s 条记录\n' "$after"
+}
+
+# ---- 备份与恢复 ----
+
+# 把整个库（含全部 git 历史）打成一个 bundle 文件备份。
+# bundle 里敏感值全是密文；系统名/URL/备注等元数据按设计是明文。
+cmd_backup() {
+  local dest="${1:-}"
+  if [ -z "$dest" ]; then
+    local icloud="$HOME/Library/Mobile Documents/com~apple~CloudDocs"
+    if [ -d "$icloud" ]; then dest="$icloud/VaultBackups"; else dest="$HOME/VaultBackups"; fi
+  fi
+  mkdir -p "$dest" || die "无法创建备份目录: $dest"
+  if [ -n "$(git -C "$VAULT_DIR" status --porcelain)" ]; then
+    printf '⚠️  有未提交改动，本次备份只含已提交内容（先 vault save 可全量）\n' >&2
+  fi
+  local stamp name tmpd tmp
+  stamp="$(date +%Y%m%d-%H%M%S)"
+  name="vault-$stamp.bundle"
+  tmpd="$(mktemp -d)"; tmp="$tmpd/vault.bundle"
+  if ! git -C "$VAULT_DIR" bundle create "$tmp" --all; then
+    rm -rf "$tmpd"; die "创建 bundle 失败"
+  fi
+  mv "$tmp" "$dest/$name"; rm -rf "$tmpd"
+  git -C "$VAULT_DIR" bundle verify "$dest/$name" >/dev/null 2>&1 || die "备份文件校验失败: $dest/$name"
+  ls -1t "$dest"/vault-*.bundle 2>/dev/null | tail -n +6 | while read -r f; do rm -f "$f"; done
+  printf '✓ 已备份: %s\n' "$dest/$name"
+  printf '  大小 %s，含全部 git 历史（%s 次提交）\n' "$(du -h "$dest/$name" | cut -f1)" "$(git -C "$VAULT_DIR" rev-list --count HEAD)"
+  printf '  恢复: vault restore "%s"\n' "$dest/$name"
+}
+
+# 从 bundle 恢复到新目录，绝不覆盖现有库
+cmd_restore() {
+  local bundle="${1:?用法: vault restore <备份文件.bundle> [目标目录]}"
+  local dest="${2:-$HOME/Vault-restored-$(date +%Y%m%d-%H%M%S)}"
+  [ -f "$bundle" ] || die "找不到备份文件: $bundle"
+  # verify 需要 git 仓库上下文；新机器上可能没有 → 用一次性空仓库做校验
+  local scratch; scratch="$(mktemp -d)"
+  git init -q "$scratch"
+  git -C "$scratch" bundle verify "$bundle" >/dev/null 2>&1 || { rm -rf "$scratch"; die "不是有效的 git bundle 或文件已损坏: $bundle"; }
+  rm -rf "$scratch"
+  [ -e "$dest" ] && die "目标目录已存在，拒绝覆盖: $dest"
+  check_key
+  git clone -q "$bundle" "$dest" || die "恢复失败"
+  local n
+  n="$(sops decrypt --output-type json "$dest/secrets.yaml" 2>/dev/null | jq -r '.systems // {} | length' 2>/dev/null)"
+  if [ -z "$n" ] || [ "$n" = "null" ]; then
+    die "恢复出来的库无法解密（age 密钥对吗？）——文件保留在 $dest"
+  fi
+  printf '✓ 已恢复到: %s（%s 条记录，解密验证通过）\n' "$dest" "$n"
+  printf '  直接使用: VAULT_DIR="%s" vault ls\n' "$dest"
+  printf '  或替换旧库: 先把旧 ~/Vault 移走，再 mv "%s" ~/Vault\n' "$dest"
+}
+
+# 生成 age 密钥的离线备份卡（HTML，浏览器打开打印）。
+# ⚠️ 卡片含明文私钥：应由用户本人运行；打印后用 vault clean 删除。
+cmd_keycard() {
+  check_key
+  local out="${1:-/tmp/vault-keycard-$(date +%Y%m%d-%H%M%S).html}"
+  local pub sec keydir
+  pub="$(age-keygen -y "$SOPS_AGE_KEY_FILE" 2>/dev/null)" || die "无法从 $SOPS_AGE_KEY_FILE 读出公钥"
+  sec="$(grep -o 'AGE-SECRET-KEY-[A-Z0-9]*' "$SOPS_AGE_KEY_FILE" | head -1)"
+  [ -n "$sec" ] || die "密钥文件里没找到 age 私钥"
+  keydir="$(dirname "$SOPS_AGE_KEY_FILE")"
+  cat > "$out" <<HTML
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>Vault 主密钥备份卡</title>
+<style>
+body{font:15px/1.6 -apple-system,"PingFang SC",sans-serif;background:#fff;color:#111;max-width:640px;margin:40px auto;padding:0 20px}
+h1{font-size:20px} h2{font-size:16px;margin-top:28px}
+.card{border:3px solid #111;border-radius:12px;padding:24px;margin:20px 0}
+.key{font:15px/1.5 ui-monospace,Menlo,monospace;word-break:break-all;background:#f5f5f5;border:1px dashed #999;padding:12px;border-radius:6px}
+.pub{font:12px/1.4 ui-monospace,Menlo,monospace;word-break:break-all;color:#555}
+.warn{background:#fff3cd;border:1px solid #e0c060;border-radius:8px;padding:12px;font-size:13.5px}
+ol li{margin:6px 0} .sign{margin-top:24px;font-size:13px;color:#555} code{background:#f0f0f0;padding:1px 5px;border-radius:4px;font-size:13px}
+@media print{.noprint{display:none}}
+</style></head><body>
+<h1>🔑 Vault 主密钥离线备份卡</h1>
+<p class="warn">任何同时拿到<b>这张卡</b>和你<b>任意一个备份文件</b>（.bundle）的人，都能读出你整个凭据库。请打印 <b>2 份</b>，存放在 <b>2 个不同的物理地点</b>，像保管现金一样。绝不要拍照上传网盘或发到聊天软件。</p>
+<div class="card">
+<p><b>私钥</b>（恢复用，绝不外传）：</p>
+<div class="key">${sec}</div>
+<p><b>公钥</b>（核对密钥用，可公开）：</p>
+<div class="pub">${pub}</div>
+<p class="sign">生成时间：$(date '+%Y-%m-%d %H:%M') · 机器：$(hostname -s) · 库位置：~/Vault/secrets.yaml</p>
+</div>
+<h2>恢复步骤（新电脑上）</h2>
+<ol>
+<li>安装工具：<code>brew install age sops</code>（Linux 用包管理器或官方 release）</li>
+<li>重建密钥：<code>mkdir -p "${keydir}"</code>，把上面的私钥单独一行写入 <code>${SOPS_AGE_KEY_FILE}</code>，然后 <code>chmod 600 "${SOPS_AGE_KEY_FILE}"</code></li>
+<li>恢复库：<code>vault restore /路径/vault-XXXXXXXX-XXXXXX.bundle</code>（会自动验证能否解密）</li>
+</ol>
+<p class="noprint">打印完成后，回到终端执行 <code>vault clean</code> 删除磁盘上的本文件。</p>
+</body></html>
+HTML
+  chmod 600 "$out"
+  command -v open >/dev/null 2>&1 && open "$out"
+  printf '密钥备份卡已生成并在浏览器打开：\n  %s\n' "$out"
+  printf '⚠️  卡片含明文私钥：打印 2 份异地保存后，执行 vault clean 删除\n'
+}
+
+# 整库编辑：sops 官方机制 —— 解密 → 编辑器打开 → 保存退出时自动重新加密。
+# 编辑器优先级：$EDITOR → VS Code → Cursor → vim（VS Code/Cursor 用 --wait 阻塞到关标签页）
+cmd_edit() {
+  local ed="${EDITOR:-}"
+  if [ -z "$ed" ]; then
+    local code="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+    local cursor="/Applications/Cursor.app/Contents/Resources/app/bin/cursor"
+    if   [ -x "$code" ];   then ed="$code --wait"
+    elif [ -x "$cursor" ]; then ed="$cursor --wait"
+    elif command -v vim >/dev/null 2>&1; then ed="vim"
+    else ed="vi"; fi
+  fi
+  printf '编辑器: %s（保存并关闭标签页 = 自动重新加密入库）\n' "$ed"
+  EDITOR="$ed" sops edit "$SECRETS"
+}
+
+cmd_save() {
+  git -C "$VAULT_DIR" add -A
+  if git -C "$VAULT_DIR" diff --cached --quiet; then
+    printf '没有需要提交的改动\n'; return 0
+  fi
+  git -C "$VAULT_DIR" commit -q -m "${1:-vault: update $(date '+%Y-%m-%d %H:%M')}"
+  git -C "$VAULT_DIR" --no-pager log -1 --stat --oneline
+}
+
+cmd_log() {
+  git -C "$VAULT_DIR" --no-pager log --oneline -n "${1:-20}"
+}
+
+cmd_remote() {
+  local url="${1:?用法: vault remote <git 仓库地址>}"
+  if git -C "$VAULT_DIR" remote get-url origin >/dev/null 2>&1; then
+    git -C "$VAULT_DIR" remote set-url origin "$url"
+  else
+    git -C "$VAULT_DIR" remote add origin "$url"
+  fi
+  printf 'origin = %s\n' "$url"
+}
+
+cmd_push() { git -C "$VAULT_DIR" push -u origin HEAD; }
+cmd_pull() { git -C "$VAULT_DIR" pull --rebase; }
+
+cmd_path() {
+  printf 'VAULT_DIR   %s\n' "$VAULT_DIR"
+  printf 'SECRETS     %s\n' "$SECRETS"
+  printf 'AGE_KEY     %s\n' "${SOPS_AGE_KEY_FILE:-（未找到！）}"
+  printf 'SOPS        %s\n' "$(command -v sops || echo '-')"
+}
+
+cmd_doctor() {
+  local ok=0
+  printf '%-14s %s\n' "sops"   "$(command -v sops || { echo '缺失 → brew install sops'; ok=1; })"
+  printf '%-14s %s\n' "jq"     "$(command -v jq   || { echo '缺失 → brew install jq';   ok=1; })"
+  printf '%-14s %s\n' "python3" "$(command -v python3 || echo '缺失（仅 totp 命令受影响）')"
+  if [ -f "${SOPS_AGE_KEY_FILE:-/nonexistent}" ]; then
+    printf '%-14s %s\n' "age 密钥" "$SOPS_AGE_KEY_FILE"
+    local perm; perm="$(stat -f '%Lp' "$SOPS_AGE_KEY_FILE")"
+    if [ "$perm" = "600" ]; then printf '%-14s %s\n' "密钥权限" "600 ✓"
+    else printf '%-14s %s\n' "密钥权限" "$perm ⚠️ 建议 chmod 600"; fi
+  else
+    printf '%-14s %s\n' "age 密钥" "未找到 ⚠️（库将无法解密）"; ok=1
+  fi
+  if sops decrypt --output-type json "$SECRETS" >/dev/null 2>&1; then
+    printf '%-14s %s\n' "解密自检" "通过 ✓"
+    printf '%-14s %s 条\n' "系统数量" "$(sj | jq -r '.systems|length')"
+  else
+    printf '%-14s %s\n' "解密自检" "失败 ✗"; ok=1
+  fi
+  if [ -n "$(git -C "$VAULT_DIR" status --porcelain)" ]; then
+    printf '%-14s %s\n' "git" "有未提交改动 → vault save"
+  else
+    printf '%-14s %s\n' "git" "干净 ✓"
+  fi
+  local bdir="$HOME/Library/Mobile Documents/com~apple~CloudDocs/VaultBackups"
+  [ -d "$bdir" ] || bdir="$HOME/VaultBackups"
+  local latest
+  latest="$(ls -1t "$bdir"/vault-*.bundle 2>/dev/null | head -1)"
+  if [ -n "$latest" ]; then
+    printf '%-14s %s\n' "最近备份" "$(basename "$latest")"
+  else
+    printf '%-14s %s\n' "最近备份" "无 ⚠️ → vault backup"
+  fi
+  return $ok
+}
+
+usage() {
+  cat <<'EOF'
+vault —— 本地加密凭据库（免费 / 本地 / AI 可管理）
+
+读取
+  vault ls [关键词]            列出所有系统（系统名 / 环境 / 负责人 / 入口）
+  vault peek                   不解密，直接列出系统名
+  vault meta                   全库 JSON 元数据（不解密；明文元数据带值，密钥字段只标 enc）
+  vault shape                  只报告 stdin 内容的形状（长度/行数/构成/前缀/哈希），不输出内容；
+                               入库前体检剪贴板：pbpaste | vault shape
+  vault show <系统>            显示整条记录（含明文密码，谨慎）
+  vault get  <系统> [字段]      取单个字段，默认 password
+  vault copy <系统> [字段]      复制到剪贴板，不打印
+  vault search <关键词>         搜系统名/入口/用户名/备注（不解密密码）
+  vault find-secret <片段>      反查某密码用在哪些系统（只输出系统名）
+  vault totp <系统>            用存下的种子算出当前动态验证码
+
+明文查看（残留面从小到大）
+  vault cat  [系统]            明文打到标准输出，不落盘；可管道给 grep/less
+  vault view [系统]            在 less 里分页看，退出后内容从屏幕清除
+  vault html [文件]            生成浏览器卡片视图（分组/全字段/动态码实时刷新/点击复制）
+  vault clean                  删除 html 视图和导出 CSV 遗留的明文临时文件
+
+检查与维护
+  vault audit                  查加密规则有没有漏网字段、有没有明文存放的密钥
+  vault reencrypt              改完 .sops.yaml 后按新规则重新加密整个库
+
+备份与恢复
+  vault backup [目录]          整库（含 git 历史）打包成单文件；默认 iCloud Drive/VaultBackups，保留最近 5 份
+  vault restore <bundle> [目录] 从备份恢复到新目录，绝不覆盖现有库，自动验证可解密
+  vault keycard [文件]         生成 age 密钥离线备份卡（浏览器打印）；⚠️ 含明文私钥，打印后 vault clean
+
+写入
+  vault new  <系统> [--url U] [--username X] [--password P] [--env E] [--owner O] [--note N]
+                              新建记录；不给 --password 则自动生成 24 位随机密码
+  vault set  <系统> <字段> <值|->  设置字段；值为 - 时从 stdin 读（pbpaste | vault set X appkey -，
+                                密码不进命令行参数/shell 历史/进程列表）
+  vault rm   <系统> [字段]      删除整条或单个字段
+  vault edit                   整库编辑：VS Code（或 $EDITOR）里改明文 YAML，关掉标签页自动重加密
+  vault md                     用非敏感字段重建 systems.md 的自动区块
+
+运维
+  vault save [说明]            提交本次改动到 git
+  vault log                   查看改动历史
+  vault remote <git 地址>      绑定备份仓库（建议私有仓库）
+  vault push / vault pull      推 / 拉
+  vault export [文件]          导出明文 CSV（给手机端导入，用完即删）
+  vault doctor                 自检（密钥、权限、解密、git 状态）
+  vault path                   打印库和密钥的位置
+EOF
+}
+
+main() {
+  local cmd="${1:-help}"
+  shift || true
+  case "$cmd" in
+    help|-h|--help) usage; return 0 ;;
+    path)  cmd_path; return 0 ;;
+    doctor) cmd_doctor; return $? ;;
+  esac
+  check
+  case "$cmd" in
+    ls|list)   cmd_ls "${1:-}" ;;
+    meta)      cmd_meta ;;
+    shape)     cmd_shape ;;
+    peek)      cmd_peek ;;
+    show)      cmd_show "$@" ;;
+    get)       cmd_get "$@" ;;
+    copy|cp)   cmd_copy "$@" ;;
+    search|find) cmd_search "$@" ;;
+    find-secret) cmd_find_secret "$@" ;;
+    totp)      cmd_totp "$@" ;;
+    cat)       check_key; cmd_cat "${1:-}" ;;
+    view)      check_key; cmd_view "${1:-}" ;;
+    html)      cmd_html "${1:-}" ;;
+    clean)     cmd_clean ;;
+    audit)     cmd_audit ;;
+    reencrypt|reenc) cmd_reencrypt ;;
+    backup)    cmd_backup "${1:-}" ;;
+    restore)   cmd_restore "$@" ;;
+    keycard)   cmd_keycard "${1:-}" ;;
+    new|add)   cmd_new "$@" ;;
+    set)       cmd_set "$@" ;;
+    rm|del)    cmd_rm "$@" ;;
+    edit)      check_key; cmd_edit ;;
+    md)        cmd_md ;;
+    save|commit) cmd_save "${1:-}" ;;
+    log)       cmd_log "${1:-20}" ;;
+    remote)    cmd_remote "$@" ;;
+    push)      cmd_push ;;
+    pull)      cmd_pull ;;
+    export)    check_key; cmd_export "${1:-}" ;;
+    *) die "未知命令: $cmd（运行 vault help 查看用法）" ;;
+  esac
+}
+
+main "$@"

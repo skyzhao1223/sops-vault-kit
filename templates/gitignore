@@ -1,0 +1,8 @@
+.DS_Store
+# 明文明文快照/导出，永远不要提交
+export/
+*.decrypted
+*.plain.yaml
+*.plain.json
+*.csv
+tmp/

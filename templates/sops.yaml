@@ -1,0 +1,30 @@
+# sops 规则：白名单模式（fail-closed）
+#
+# 【核心设计】用 unencrypted_regex 而不是 encrypted_regex：
+#   默认**所有字段都加密**，只有下面列出的字段保持明文可读。
+#
+# 为什么这样更好：黑名单一旦漏掉一个字段名（比如 appkey、sign_key），
+# 它会**静默地以明文存下来**，不报错、不提示，你永远不知道。
+# 白名单的失败模式是反过来的——新字段会被"多加密"，最多损失一点可读性，
+# 绝不会把密钥漏成明文。
+#
+# 明文可读的字段（都不是秘密，明文是为了让人和 AI 一眼看懂全貌）：
+#   url/endpoint/restapi  入口地址
+#   appid/app_id          AppID（公开标识）
+#   mch_id/serial_no      商户号、证书序列号
+#   username/account      账号名
+#   bucket/region         存储桶、区域
+#   sign_name             短信签名名称（不是密钥，别被名字骗了）
+#   cert_path             证书文件的**路径**（不是证书内容）
+#   env/owner/note        环境、负责人、备注
+#
+# 其余一切——appkey / appsecret / sign_key / map_key / sms_key / apiv3_key /
+# access_key_id / access_key_secret / token / password / 以及你以后新加的任何
+# 字段名——都会被自动加密。
+#
+# 改完本文件后必须执行 `vault reencrypt` 才会对已有记录生效
+# （sops updatekeys 不会重新应用改过的加密规则）。
+creation_rules:
+  - path_regex: secrets\.ya?ml$
+    age: __AGE_PUBLIC_KEY__
+    unencrypted_regex: '(?i)^(url|endpoint|restapi|appid|app_id|mch_id|merchant_id|serial_no|serial_number|username|user|account|bucket|region|env|environment|owner|note|remark|doc|console|phone|email|host|port|tenant|corp_id|agent_id|name|title|status|tag|tags|sign_name|cert_path|callback_url|notify_url|redirect_uri|说明|备注|负责人|环境)$'
