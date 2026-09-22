@@ -48,7 +48,7 @@ else
   chmod 700 "$(dirname "$KEY_FILE")"
   age-keygen -o "$KEY_FILE" >/dev/null 2>&1 || die "age-keygen 生成密钥失败"
   chmod 600 "$KEY_FILE"
-  say "✓ 已生成新 age 密钥: $KEY_FILE（600 权限）"
+  say "✓ 已生成新 age 密钥: ${KEY_FILE}（600 权限）"
 fi
 PUB="$(age-keygen -y "$KEY_FILE")" || die "无法从密钥文件导出公钥"
 

@@ -9,6 +9,7 @@ KIT="$(cd "$(dirname "$0")/.." && pwd)"
 FAKE="$(mktemp -d "${TMPDIR:-/tmp}/vault-smoke.XXXXXX")"
 export HOME="$FAKE"
 PASS=0; FAIL=0
+printf 'env: %s | bash %s | sops %s\n' "$(uname -srm)" "$BASH_VERSION" "$(sops --version 2>/dev/null | head -1 | awk '{print $2}')"
 
 cleanup() { rm -rf "$FAKE"; }
 trap cleanup EXIT
@@ -33,13 +34,13 @@ check "version"        "vault 0.1.0" "$("$V" version 2>&1)"
 [ -z "$("$V" ls)" ] && ok "空库 ls 为空" || bad "空库 ls 为空" "$("$V" ls)"
 
 # ── 3. 建条目 + stdin 写值 + shape 回环 ──────────────────
-"$V" new "服务/Stripe" --url "https://dashboard.stripe.com" --username "ops@corp" --note "生产" >/dev/null 2>&1 \
-  && ok "new（自动生成密码）" || bad "new" ""
+NEW_OUT=$("$V" new "服务/Stripe" --url "https://dashboard.stripe.com" --username "ops@corp" --note "生产" 2>&1) \
+  && ok "new（自动生成密码）" || bad "new" "$NEW_OUT"
 LEN=$("$V" get "服务/Stripe" password | tr -d '\n' | wc -c | tr -d ' ')
 [ "$LEN" = "24" ] && ok "自动生成密码 24 位" || bad "自动生成密码 24 位" "实际 $LEN"
 
 SECRET='sk_test_SMOKE_FAKE_1234567890abcdef'
-printf '%s' "$SECRET" | "$V" set "服务/Stripe" appkey - >/dev/null 2>&1 && ok "set 走 stdin" || bad "set stdin" ""
+SET_OUT=$(printf '%s' "$SECRET" | "$V" set "服务/Stripe" appkey - 2>&1) && ok "set 走 stdin" || bad "set stdin" "$SET_OUT"
 A=$(printf '%s' "$SECRET" | "$V" shape | grep -o 'sha256:[a-f0-9]*')
 B=$("$V" get "服务/Stripe" appkey | tr -d '\n' | "$V" shape | grep -o 'sha256:[a-f0-9]*')
 [ -n "$A" ] && [ "$A" = "$B" ] && ok "shape 指纹回环一致" || bad "shape 回环" "$A vs $B"
