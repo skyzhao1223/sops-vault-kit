@@ -32,7 +32,7 @@ fi
 V="$FAKE/Vault/bin/vault"
 
 # ── 2. 版本与空库 ────────────────────────────────────────
-check "version"        "vault 0.5.1" "$("$V" version 2>&1)"
+check "version"        "vault 0.5.2" "$("$V" version 2>&1)"
 [ -z "$("$V" ls)" ] && ok "空库 ls 为空" || bad "空库 ls 为空" "$("$V" ls)"
 
 # ── 3. 建条目 + stdin 写值 + shape 回环 ──────────────────
@@ -113,6 +113,15 @@ fi
 "$V" peek | grep -Fxq "服务/Stripe" && bad "rename 旧名残留" || ok "rename 旧名已除"
 REN_OUT=$("$V" rename "服务/Stripe2" "工作/GitLab" 2>&1) && bad "rename 应拒绝冲突" || check "rename 冲突拒绝" "已存在" "$REN_OUT"
 "$V" rename "服务/Stripe2" "服务/Stripe" >/dev/null 2>&1 && ok "rename 改回" || bad "rename 改回" ""
+
+# ── 8d. 冒号条目名回归（Chrome 导入暴露的解析 bug）──────
+"$V" new "测试/localhost:8080" --no-password --url http://localhost:8080 >/dev/null 2>&1
+META_N=$("$V" meta | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
+PEEK_N=$("$V" peek | wc -l | tr -d ' ')
+[ "$META_N" = "$PEEK_N" ] && ok "meta/peek 计数一致（$META_N）" || bad "meta/peek 计数" "meta=$META_N peek=$PEEK_N"
+"$V" meta | python3 -c 'import json,sys; assert "测试/localhost:8080" in json.load(sys.stdin)' && ok "冒号条目进 meta" || bad "冒号条目" ""
+"$V" audit >/dev/null 2>&1 && ok "含冒号库 audit 通过" || bad "audit" ""
+"$V" rm "测试/localhost:8080" >/dev/null 2>&1
 
 # ── 9. html / clean ──────────────────────────────────────
 HTML_OUT="$("$V" html "$FAKE/view.html" 2>&1)"

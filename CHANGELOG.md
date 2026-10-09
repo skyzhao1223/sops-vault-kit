@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.2 — 2026-10-09
+
+### Fixed
+
+- **Entry names containing colons were invisible to `meta` and `audit`**: the
+  raw-file parsers matched `[^:]*` for entry keys, so browser-imported names
+  like `localhost:8080` or URL-style titles were silently dropped — on a real
+  1029-entry vault, `meta` reported only 584. Both parsers now match greedily
+  to the last colon and unwrap YAML quoting. `peek`/`ls` were unaffected.
+  Regression-covered in smoke (colon entry: meta/peek parity + audit pass).
+
 ## 0.5.0 — 2026-10-09
 
 ### Added

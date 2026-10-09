@@ -70,9 +70,11 @@ def load_fields(path):
     for line in pathlib.Path(path).read_text().splitlines():
         if re.match(r"^sops:\s*$", line):
             break
-        m = re.match(r"^ {4}([^\s#][^:]*):\s*$", line)
+        m = re.match(r"^ {4}([^\s#].*):\s*$", line)
         if m:
             entry = m.group(1).strip()
+            if len(entry) >= 2 and entry[0] in (chr(34), chr(39)) and entry[-1] == entry[0]:
+                entry = entry[1:-1]
             continue
         m = re.match(r"^ {8}([^\s#-][^:]*):\s?(.*)$", line)
         if m and entry is not None:

@@ -9,7 +9,7 @@
 #   3. 所有写操作都改同一个 YAML 文件，改动可 git diff / git 回滚。
 set -euo pipefail
 
-VAULT_VERSION="0.5.1"
+VAULT_VERSION="0.5.2"
 
 # 辅助脚本（*.py / *.html）与本脚本同目录分发；解析符号链接（如 ~/.local/bin/vault）
 _SELF="$0"
@@ -170,9 +170,12 @@ entry = None
 for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
     if re.match(r'^sops:\s*$', line):
         break
-    m = re.match(r'^ {4}([^\s#][^:]*):\s*$', line)
+    m = re.match(r'^ {4}([^\s#].*):\s*$', line)
     if m:
-        entry = m.group(1).strip(); rows[entry] = {}; continue
+        entry = m.group(1).strip()
+        if len(entry) >= 2 and entry[0] in (chr(34), chr(39)) and entry[-1] == entry[0]:
+            entry = entry[1:-1]
+        rows[entry] = {}; continue
     m = re.match(r'^ {8}([^\s#-][^:]*):\s?(.*)$', line)
     if m and entry is not None:
         k = m.group(1).strip(); v = m.group(2).strip()
