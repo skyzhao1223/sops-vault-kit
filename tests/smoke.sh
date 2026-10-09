@@ -32,7 +32,7 @@ fi
 V="$FAKE/Vault/bin/vault"
 
 # ── 2. 版本与空库 ────────────────────────────────────────
-check "version"        "vault 0.4.1" "$("$V" version 2>&1)"
+check "version"        "vault 0.5.0" "$("$V" version 2>&1)"
 [ -z "$("$V" ls)" ] && ok "空库 ls 为空" || bad "空库 ls 为空" "$("$V" ls)"
 
 # ── 3. 建条目 + stdin 写值 + shape 回环 ──────────────────
@@ -60,6 +60,11 @@ check "peek 免密钥"       "服务/Stripe" "$("$V" peek)"
 "$V" set "服务/Stripe" totp "JBSWY3DPEHPK3PXP" >/dev/null 2>&1
 TOTP_OUT="$("$V" totp "服务/Stripe" 2>&1)"
 echo "$TOTP_OUT" | grep -qE '^[0-9]{6}' && ok "totp 输出 6 位码" || bad "totp" "$TOTP_OUT"
+LS_ROW=$("$V" ls 服务/Stripe)
+check "ls 类型列·密码"   "密码"   "$LS_ROW"
+check "ls 类型列·密钥"   "密钥"   "$LS_ROW"
+check "ls 类型列·动态码" "动态码" "$LS_ROW"
+check "ls 类型列·en"     "password+secret+totp" "$(VAULT_LANG=en "$V" ls 服务/Stripe)"
 
 # ── 6. md / save / log ───────────────────────────────────
 "$V" md >/dev/null 2>&1

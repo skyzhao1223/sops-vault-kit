@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0 — 2026-10-09
+
+### Added
+
+- `vault ls` gains a **type column**: 密码 / 密钥 / 动态码 (password / secret /
+  totp in `VAULT_LANG=en`), inferred from field names and non-empty values —
+  same vocabulary as the DSH panel's row badges (plugin v0.3.3). Multiple kinds
+  join with `+` (e.g. `密码+密钥+动态码`). Zero migration: existing vaults get
+  types immediately.
+
 ## 0.4.1 — 2026-09-22
 
 ### Fixed

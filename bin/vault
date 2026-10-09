@@ -9,7 +9,7 @@
 #   3. 所有写操作都改同一个 YAML 文件，改动可 git diff / git 回滚。
 set -euo pipefail
 
-VAULT_VERSION="0.4.1"
+VAULT_VERSION="0.5.0"
 
 # 辅助脚本（*.py / *.html）与本脚本同目录分发；解析符号链接（如 ~/.local/bin/vault）
 _SELF="$0"
@@ -141,11 +141,22 @@ genpw() {
 
 cmd_ls() {
   local f="${1:-}"
-  sj | jq -r --arg f "$f" '
+  sj | jq -r --arg f "$f" --arg lang "${VAULT_LANG:-zh}" '
     def d: if (. // "") == "" then "-" else . end;
+    # 类型推断：与面板徽章同一套词汇（密码/密钥/动态码），按字段名+非空值判断
+    def kinds:
+      (if $lang == "en"
+        then {pw: "password", sec: "secret", tp: "totp"}
+        else {pw: "密码", sec: "密钥", tp: "动态码"} end) as $L
+      | [ (if ((.password // "") | tostring) != "" then $L.pw else empty end),
+          (if ([to_entries[]
+                | select(.key | test("token|secret|key|credential|cookie|session|private|apiv3|sign|salt|seed|dsn"; "i"))
+                | select(((.value // "") | tostring) != "")] | length) > 0 then $L.sec else empty end),
+          (if ((.totp // "") | tostring) != "" then $L.tp else empty end) ]
+      | if length == 0 then "-" else join("+") end;
     .systems // {} | to_entries[]
     | select($f == "" or (.key | test($f; "i")))
-    | [ .key, (.value.env|d), (.value.owner|d), (.value.url|d) ]
+    | [ .key, (.value | kinds), (.value.env|d), (.value.owner|d), (.value.url|d) ]
     | @tsv'
 }
 
