@@ -9,7 +9,7 @@
 #   3. 所有写操作都改同一个 YAML 文件，改动可 git diff / git 回滚。
 set -euo pipefail
 
-VAULT_VERSION="0.5.0"
+VAULT_VERSION="0.5.1"
 
 # 辅助脚本（*.py / *.html）与本脚本同目录分发；解析符号链接（如 ~/.local/bin/vault）
 _SELF="$0"
@@ -150,7 +150,7 @@ cmd_ls() {
         else {pw: "密码", sec: "密钥", tp: "动态码"} end) as $L
       | [ (if ((.password // "") | tostring) != "" then $L.pw else empty end),
           (if ([to_entries[]
-                | select(.key | test("token|secret|key|credential|cookie|session|private|apiv3|sign|salt|seed|dsn"; "i"))
+                | select(.key | test("token|secret|key|credential|cookie|session|private|passwd|pwd|apiv3|sign|salt|seed|dsn|(^|[_-])(ak|sk)([_-]|$)"; "i"))
                 | select(((.value // "") | tostring) != "")] | length) > 0 then $L.sec else empty end),
           (if ((.totp // "") | tostring) != "" then $L.tp else empty end) ]
       | if length == 0 then "-" else join("+") end;
@@ -776,7 +776,7 @@ usage_en() {
 vault — local encrypted credential store (sops + age + git; free, local, AI-manageable)
 
 Read
-  vault ls [filter]            list entries (name / env / owner / url); no decryption
+  vault ls [filter]            list entries (name / type / env / owner / url); type inferred: password/secret/totp
   vault peek                   list entry names straight from the ciphertext (no key needed)
   vault meta                   whole-vault JSON metadata (no decryption; for UI/AI)
   vault show <entry>           one entry in plaintext (careful)
@@ -845,7 +845,7 @@ usage() {
 vault —— 本地加密凭据库（免费 / 本地 / AI 可管理）
 
 读取
-  vault ls [关键词]            列出所有系统（系统名 / 环境 / 负责人 / 入口）
+  vault ls [关键词]            列出所有系统（名称 / 类型 / 环境 / 负责人 / 入口）；类型=密码/密钥/动态码自动推断
   vault peek                   不解密，直接列出系统名
   vault meta                   全库 JSON 元数据（不解密；明文元数据带值，密钥字段只标 enc）
   vault import <csv> [--format auto|bitwarden|1password|chrome|generic]
